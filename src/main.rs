@@ -1,3 +1,6 @@
+mod state;
+use state::{AppState, ImportedClip};
+
 fn main() -> eframe::Result<()> {
     env_logger::init();
     let options = eframe::NativeOptions {
@@ -14,7 +17,9 @@ fn main() -> eframe::Result<()> {
 }
 
 #[derive(Default)]
-struct AvioEditorApp {}
+struct AvioEditorApp {
+    state: AppState,
+}
 
 impl eframe::App for AvioEditorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -40,6 +45,46 @@ impl eframe::App for AvioEditorApp {
             .default_width(240.0)
             .show(ctx, |ui| {
                 ui.heading("Clip Browser");
+                ui.separator();
+
+                if ui.button("Import").clicked()
+                    && let Some(paths) = rfd::FileDialog::new()
+                        .add_filter(
+                            "Video / Audio",
+                            &["mp4", "mov", "mkv", "avi", "mp3", "aac", "wav", "flac"],
+                        )
+                        .pick_files()
+                {
+                    for path in paths {
+                        match avio::open(&path) {
+                            Ok(info) => self.state.clips.push(ImportedClip {
+                                path,
+                                info,
+                                thumbnail: None,
+                                proxy_path: None,
+                            }),
+                            Err(e) => log::warn!("probe failed for {path:?}: {e}"),
+                        }
+                    }
+                }
+
+                ui.separator();
+
+                for clip in &self.state.clips {
+                    ui.horizontal(|ui| {
+                        ui.label("\u{1F3AC}");
+                        ui.label(
+                            clip.path
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .as_ref(),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(clip.duration_label());
+                        });
+                    });
+                }
             });
 
         // 4. Center: Source Monitor (must be last)
