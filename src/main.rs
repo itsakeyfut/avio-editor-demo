@@ -84,7 +84,7 @@ impl eframe::App for AvioEditorApp {
                                     let path_for_task = path.clone();
                                     tokio::task::spawn_blocking(move || {
                                         if let Some((w, h, rgb)) =
-                                            thumbnail::extract_thumbnail(&path_for_task)
+                                            thumbnail::select_best_thumbnail(&path_for_task)
                                         {
                                             let _ = tx.send((path_for_task, w, h, rgb));
                                         }
