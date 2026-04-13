@@ -4,4 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-avio = { version = "0.13.0", features = ["filter", "pipeline", "stream", "preview", "preview-proxy", "tokio", "serde", "srt"] }
+avio = { version = "0.13.0", features = [
+    "decode",
+    "encode",
+    "filter",
+    "pipeline",
+    "preview",
+    "preview-proxy",
+    "tokio",
+    "serde",
+] }
