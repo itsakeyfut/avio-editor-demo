@@ -1,8 +1,12 @@
 mod state;
+mod thumbnail;
 use state::{AppState, ImportedClip};
 
 fn main() -> eframe::Result<()> {
     env_logger::init();
+    let rt = tokio::runtime::Runtime::new().map_err(|e| eframe::Error::AppCreation(Box::new(e)))?;
+    let _rt_guard = rt.enter();
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("avio-editor-demo")
@@ -23,6 +27,16 @@ struct AvioEditorApp {
 
 impl eframe::App for AvioEditorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Drain completed thumbnail results each frame.
+        while let Ok((path, w, h, rgb)) = self.state.thumbnail_rx.try_recv() {
+            let image = egui::ColorImage::from_rgb([w as usize, h as usize], &rgb);
+            let texture =
+                ctx.load_texture(path.to_string_lossy(), image, egui::TextureOptions::LINEAR);
+            if let Some(clip) = self.state.clips.iter_mut().find(|c| c.path == path) {
+                clip.thumbnail = Some(texture);
+            }
+        }
+
         // 1. Top menu bar (must come before all other panels)
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
@@ -57,12 +71,26 @@ impl eframe::App for AvioEditorApp {
                 {
                     for path in paths {
                         match avio::open(&path) {
-                            Ok(info) => self.state.clips.push(ImportedClip {
-                                path,
-                                info,
-                                thumbnail: None,
-                                proxy_path: None,
-                            }),
+                            Ok(info) => {
+                                let has_video = info.primary_video().is_some();
+                                self.state.clips.push(ImportedClip {
+                                    path: path.clone(),
+                                    info,
+                                    thumbnail: None,
+                                    proxy_path: None,
+                                });
+                                if has_video {
+                                    let tx = self.state.thumbnail_tx.clone();
+                                    let path_for_task = path.clone();
+                                    tokio::task::spawn_blocking(move || {
+                                        if let Some((w, h, rgb)) =
+                                            thumbnail::extract_thumbnail(&path_for_task)
+                                        {
+                                            let _ = tx.send((path_for_task, w, h, rgb));
+                                        }
+                                    });
+                                }
+                            }
                             Err(e) => log::warn!("probe failed for {path:?}: {e}"),
                         }
                     }
@@ -72,7 +100,17 @@ impl eframe::App for AvioEditorApp {
 
                 for clip in &self.state.clips {
                     ui.horizontal(|ui| {
-                        ui.label("\u{1F3AC}");
+                        match &clip.thumbnail {
+                            Some(tex) => {
+                                ui.image(egui::load::SizedTexture::new(
+                                    tex.id(),
+                                    egui::vec2(48.0, 27.0),
+                                ));
+                            }
+                            None => {
+                                ui.label("\u{1F3AC}");
+                            }
+                        }
                         ui.label(
                             clip.path
                                 .file_name()

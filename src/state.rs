@@ -1,8 +1,21 @@
 use std::path::PathBuf;
+use std::sync::mpsc;
 
-#[derive(Default)]
 pub struct AppState {
     pub clips: Vec<ImportedClip>,
+    pub thumbnail_tx: mpsc::SyncSender<(PathBuf, u32, u32, Vec<u8>)>,
+    pub thumbnail_rx: mpsc::Receiver<(PathBuf, u32, u32, Vec<u8>)>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        let (thumbnail_tx, thumbnail_rx) = mpsc::sync_channel(32);
+        Self {
+            clips: Vec::new(),
+            thumbnail_tx,
+            thumbnail_rx,
+        }
+    }
 }
 
 #[allow(dead_code)]
