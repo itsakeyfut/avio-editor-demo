@@ -1,0 +1,116 @@
+name: Bug Report
+description: Report a bug or unexpected behavior in avio-editor-demo
+title: "[Bug]: "
+labels: ["bug"]
+assignees: []
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a bug! Please provide detailed information to help understand and fix the issue.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: A concise description of the bug in 1-2 sentences.
+      placeholder: The Source Monitor freezes after importing a clip longer than 10 minutes.
+    validations:
+      required: true
+
+  - type: textarea
+    id: current_behavior
+    attributes:
+      label: Current Behavior
+      description: What is currently happening?
+      placeholder: |
+        After double-clicking a long clip in the Clip Browser, the Source Monitor
+        panel stops updating and the UI becomes unresponsive. No error is shown.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected_behavior
+    attributes:
+      label: Expected Behavior
+      description: What should happen instead?
+      placeholder: |
+        The clip should load and start playing normally in the Source Monitor,
+        regardless of its duration.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: Minimal steps to reproduce the bug.
+      placeholder: |
+        1. Launch avio-editor-demo
+        2. Click "Import" and select a video file longer than 10 minutes
+        3. Double-click the imported clip in the Clip Browser
+        4. Observe that the Source Monitor does not show any frames
+
+        Or run: `cargo run` and reproduce manually.
+    validations:
+      required: true
+
+  - type: textarea
+    id: error_output
+    attributes:
+      label: Error Output / Backtrace
+      description: Include any error messages, panics, or backtraces (`RUST_BACKTRACE=1`).
+      placeholder: |
+        thread 'main' panicked at 'called `Option::unwrap()` on a `None` value', src/player.rs:87
+        stack backtrace:
+           0: rust_begin_unwind
+           1: avio_editor_demo::player::load_clip
+           ...
+      render: shell
+
+  - type: input
+    id: app_version
+    attributes:
+      label: App Version
+      description: Which version of avio-editor-demo are you running? (output of `cargo pkgid`)
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Provide your environment information.
+      placeholder: |
+        - OS: Ubuntu 24.04 / macOS 15 / Windows 11
+        - Rust: rustc 1.93.0 (output of `rustc --version`)
+        - FFmpeg: 7.1 (output of `ffmpeg -version`)
+        - Architecture: x86_64 / aarch64
+        - Hardware acceleration: NVENC / VAAPI / none
+      render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional Context
+      description: Any other context that might be helpful (sample file, related issues, workarounds).
+      placeholder: |
+        - Only reproducible with H.265-encoded files
+        - Workaround: generating a proxy first avoids the hang
+        - Related to issue #5
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-submission Checklist
+      options:
+        - label: I have searched existing issues to ensure this is not a duplicate
+          required: true
+        - label: I have provided steps to reproduce the bug
+          required: true
+        - label: I have tested on the latest commit on `main`
+          required: false
