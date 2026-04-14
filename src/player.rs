@@ -98,6 +98,7 @@ pub fn spawn_player(
     path: PathBuf,
     frame_handle: Arc<Mutex<Option<RgbaFrame>>>,
     ctx: egui::Context,
+    start_pos: Option<Duration>,
 ) -> (std::thread::JoinHandle<()>, mpsc::Receiver<Arc<AtomicBool>>) {
     let (stop_tx, stop_rx) = mpsc::sync_channel::<Arc<AtomicBool>>(1);
     let handle = std::thread::spawn(move || {
@@ -108,6 +109,14 @@ pub fn spawn_player(
                 return;
             }
         };
+        // avio API gap: seek() takes &mut self so it cannot be called while
+        // run() blocks the player thread. We seek before play() here as a
+        // start-position workaround for scrubbing.
+        if let Some(pos) = start_pos
+            && let Err(e) = player.seek(pos)
+        {
+            log::warn!("initial seek to {pos:?} failed: {e}");
+        }
         // Send the stop handle back before blocking in run().
         let _ = stop_tx.send(player.stop_handle());
 
