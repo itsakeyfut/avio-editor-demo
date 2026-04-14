@@ -1,8 +1,11 @@
 mod analysis;
 mod gif;
+mod player;
 mod state;
 mod thumbnail;
 mod trim;
+use std::sync::Arc;
+
 use state::{AppState, GifStatus, ImportedClip, TrimStatus};
 
 fn main() -> eframe::Result<()> {
@@ -96,6 +99,35 @@ impl eframe::App for AvioEditorApp {
             });
         for path in gif_done {
             log::info!("GIF exported: {}", path.display());
+        }
+
+        // Receive stop handle from a freshly spawned player thread.
+        if let Some(rx) = &self.state.pending_stop_rx
+            && let Ok(stop) = rx.try_recv()
+        {
+            self.state.player_stop = Some(stop);
+            self.state.pending_stop_rx = None;
+        }
+
+        // Poll for the latest decoded frame from the player sink.
+        if let Ok(mut guard) = self.state.frame_handle.try_lock()
+            && let Some(frame) = guard.take()
+        {
+            let image = egui::ColorImage::from_rgba_unmultiplied(
+                [frame.width as usize, frame.height as usize],
+                &frame.data,
+            );
+            match &mut self.state.preview_texture {
+                Some(tex) => tex.set(image, egui::TextureOptions::LINEAR),
+                None => {
+                    self.state.preview_texture = Some(ctx.load_texture(
+                        "source_monitor",
+                        image,
+                        egui::TextureOptions::LINEAR,
+                    ));
+                }
+            }
+            ctx.request_repaint();
         }
 
         // Drain completed thumbnail results each frame.
@@ -229,6 +261,7 @@ impl eframe::App for AvioEditorApp {
                 ui.separator();
 
                 let mut clicked_idx: Option<usize> = None;
+                let mut dbl_clicked_idx: Option<usize> = None;
                 for (idx, clip) in self.state.clips.iter().enumerate() {
                     let selected = self.state.selected_clip_index == Some(idx);
                     ui.horizontal(|ui| {
@@ -244,8 +277,12 @@ impl eframe::App for AvioEditorApp {
                             }
                         }
                         let name = clip.path.file_name().unwrap_or_default().to_string_lossy();
-                        if ui.selectable_label(selected, name.as_ref()).clicked() {
+                        let resp = ui.selectable_label(selected, name.as_ref());
+                        if resp.clicked() {
                             clicked_idx = Some(idx);
+                        }
+                        if resp.double_clicked() {
+                            dbl_clicked_idx = Some(idx);
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(clip.duration_label());
@@ -254,6 +291,39 @@ impl eframe::App for AvioEditorApp {
                 }
                 if let Some(idx) = clicked_idx {
                     self.state.selected_clip_index = Some(idx);
+                }
+                if let Some(idx) = dbl_clicked_idx {
+                    self.state.selected_clip_index = Some(idx);
+                    // Stop any current player.
+                    if let Some(stop) = self.state.player_stop.take() {
+                        stop.store(true, std::sync::atomic::Ordering::Release);
+                    }
+                    self.state.player_thread = None;
+                    self.state.pending_stop_rx = None;
+                    self.state.monitor_clip_index = Some(idx);
+
+                    // Only launch a player if the clip has a video stream.
+                    // PreviewPlayer::open() fails for audio-only files because
+                    // DecodeBuffer requires a video stream — avio API gap: a
+                    // dedicated AudioPlayer (or an audio-only path in
+                    // PreviewPlayer) would be needed.
+                    let has_video = self
+                        .state
+                        .clips
+                        .get(idx)
+                        .map(|c| c.info.primary_video().is_some())
+                        .unwrap_or(false);
+                    if has_video
+                        && let Some(path) = self.state.clips.get(idx).map(|c| c.path.clone())
+                    {
+                        let (thread, stop_rx) = player::spawn_player(
+                            path,
+                            Arc::clone(&self.state.frame_handle),
+                            ctx.clone(),
+                        );
+                        self.state.player_thread = Some(thread);
+                        self.state.pending_stop_rx = Some(stop_rx);
+                    }
                 }
 
                 if let Some(idx) = self.state.selected_clip_index
@@ -375,6 +445,67 @@ impl eframe::App for AvioEditorApp {
         // 4. Center: Source Monitor (must be last)
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Source Monitor");
+            ui.separator();
+
+            let is_playing = self
+                .state
+                .player_thread
+                .as_ref()
+                .map(|h| !h.is_finished())
+                .unwrap_or(false);
+
+            let ctrl_height = 36.0;
+            let available = ui.available_size();
+            let video_size = egui::vec2(available.x, (available.y - ctrl_height).max(0.0));
+
+            if let Some(tex) = &self.state.preview_texture {
+                ui.image(egui::load::SizedTexture::new(tex.id(), video_size));
+            } else {
+                ui.allocate_ui(video_size, |ui| {
+                    ui.centered_and_justified(|ui| {
+                        ui.label("Double-click a clip to load it");
+                    });
+                });
+            }
+
+            ui.separator();
+            ui.horizontal(|ui| {
+                if is_playing {
+                    // avio API gap: pause() takes &mut self so it cannot be called
+                    // while run() blocks the player thread. Pause stops playback.
+                    if ui.button("⏸ Pause").clicked()
+                        && let Some(stop) = self.state.player_stop.take()
+                    {
+                        stop.store(true, std::sync::atomic::Ordering::Release);
+                    }
+                    if ui.button("⏹ Stop").clicked()
+                        && let Some(stop) = self.state.player_stop.take()
+                    {
+                        stop.store(true, std::sync::atomic::Ordering::Release);
+                    }
+                } else if let Some(idx) = self.state.monitor_clip_index {
+                    let has_video = self
+                        .state
+                        .clips
+                        .get(idx)
+                        .map(|c| c.info.primary_video().is_some())
+                        .unwrap_or(false);
+                    if has_video
+                        && ui.button("▶ Play").clicked()
+                        && let Some(path) = self.state.clips.get(idx).map(|c| c.path.clone())
+                    {
+                        let (thread, stop_rx) = player::spawn_player(
+                            path,
+                            Arc::clone(&self.state.frame_handle),
+                            ctx.clone(),
+                        );
+                        self.state.player_thread = Some(thread);
+                        self.state.pending_stop_rx = Some(stop_rx);
+                    } else if !has_video {
+                        ui.label("No video stream");
+                    }
+                }
+            });
         });
     }
 }
