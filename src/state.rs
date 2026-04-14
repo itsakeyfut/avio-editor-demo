@@ -10,6 +10,8 @@ pub struct AppState {
     pub thumbnail_rx: mpsc::Receiver<(PathBuf, u32, u32, Vec<u8>)>,
     pub scene_tx: mpsc::SyncSender<(usize, Vec<Duration>)>,
     pub scene_rx: mpsc::Receiver<(usize, Vec<Duration>)>,
+    pub keyframe_tx: mpsc::SyncSender<Vec<Duration>>,
+    pub keyframe_rx: mpsc::Receiver<Vec<Duration>>,
     pub timeline: TimelineState,
     pub trim_jobs: Vec<TrimJobHandle>,
     pub gif_jobs: Vec<GifJobHandle>,
@@ -22,6 +24,7 @@ pub struct AppState {
     pub seek_pos_secs: f64,
     pub seek_exact: bool,
     pub current_pts: Option<Duration>,
+    pub keyframes: Vec<Duration>,
     pub proxy_active: bool,
     pub pending_proxy_rx: Option<mpsc::Receiver<bool>>,
     pub playback_rate: f64,
@@ -33,6 +36,7 @@ impl Default for AppState {
     fn default() -> Self {
         let (thumbnail_tx, thumbnail_rx) = mpsc::sync_channel(32);
         let (scene_tx, scene_rx) = mpsc::sync_channel(32);
+        let (keyframe_tx, keyframe_rx) = mpsc::sync_channel(4);
         Self {
             clips: Vec::new(),
             selected_clip_index: None,
@@ -40,6 +44,8 @@ impl Default for AppState {
             thumbnail_rx,
             scene_tx,
             scene_rx,
+            keyframe_tx,
+            keyframe_rx,
             timeline: TimelineState::default(),
             trim_jobs: Vec::new(),
             gif_jobs: Vec::new(),
@@ -52,6 +58,7 @@ impl Default for AppState {
             seek_pos_secs: 0.0,
             seek_exact: false,
             current_pts: None,
+            keyframes: Vec::new(),
             proxy_active: false,
             pending_proxy_rx: None,
             playback_rate: 1.0,

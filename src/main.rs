@@ -9,6 +9,23 @@ use std::time::Duration;
 
 use state::{AppState, GifStatus, ImportedClip, TrimStatus};
 
+fn snap_to_nearest_keyframe(
+    target_secs: f64,
+    keyframes: &[std::time::Duration],
+    snap_radius_secs: f64,
+) -> f64 {
+    keyframes
+        .iter()
+        .map(|kf| kf.as_secs_f64())
+        .min_by(|a, b| {
+            let da = (a - target_secs).abs();
+            let db = (b - target_secs).abs();
+            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .filter(|&nearest| (nearest - target_secs).abs() <= snap_radius_secs)
+        .unwrap_or(target_secs)
+}
+
 fn main() -> eframe::Result<()> {
     env_logger::init();
     let rt = tokio::runtime::Runtime::new().map_err(|e| eframe::Error::AppCreation(Box::new(e)))?;
@@ -155,6 +172,11 @@ impl eframe::App for AvioEditorApp {
             if let Some(clip) = self.state.clips.iter_mut().find(|c| c.path == path) {
                 clip.thumbnail = Some(texture);
             }
+        }
+
+        // Drain keyframe enumeration results for the currently loaded clip.
+        if let Ok(kfs) = self.state.keyframe_rx.try_recv() {
+            self.state.keyframes = kfs;
         }
 
         // 1. Top menu bar (must come before all other panels)
@@ -328,6 +350,14 @@ impl eframe::App for AvioEditorApp {
                     if has_video
                         && let Some(path) = self.state.clips.get(idx).map(|c| c.path.clone())
                     {
+                        // Clear stale keyframes and enumerate new ones for this clip.
+                        self.state.keyframes.clear();
+                        let kf_tx = self.state.keyframe_tx.clone();
+                        let kf_path = path.clone();
+                        tokio::task::spawn_blocking(move || {
+                            let kfs = analysis::enumerate_keyframes(&kf_path);
+                            let _ = kf_tx.send(kfs);
+                        });
                         let proxy_dir = self
                             .state
                             .clips
@@ -563,6 +593,20 @@ impl eframe::App for AvioEditorApp {
                         }
                     }
 
+                    // Draw keyframe tick marks (blue, 4 px tall) above the seek bar.
+                    {
+                        let r = slider_resp.rect;
+                        for kf in &self.state.keyframes {
+                            let x =
+                                r.left() + (kf.as_secs_f64() / duration_secs) as f32 * r.width();
+                            ui.painter().vline(
+                                x,
+                                r.top()..=(r.top() + 4.0),
+                                egui::Stroke::new(1.0, egui::Color32::from_rgb(150, 150, 255)),
+                            );
+                        }
+                    }
+
                     // Timecode: HH:MM:SS.mmm
                     let t = self.state.seek_pos_secs;
                     let h = (t / 3600.0) as u64;
@@ -588,6 +632,14 @@ impl eframe::App for AvioEditorApp {
                     // avio API gap: seek() takes &mut self — cannot call during
                     // run(). Workaround: stop + respawn from the target position.
                     if slider_resp.drag_stopped() {
+                        // Snap to nearest keyframe in Coarse mode.
+                        if !self.state.seek_exact {
+                            self.state.seek_pos_secs = snap_to_nearest_keyframe(
+                                self.state.seek_pos_secs,
+                                &self.state.keyframes,
+                                0.5,
+                            );
+                        }
                         if let Some(stop) = self.state.player_stop.take() {
                             stop.store(true, std::sync::atomic::Ordering::Release);
                         }
