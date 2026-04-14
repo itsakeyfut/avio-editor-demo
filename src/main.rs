@@ -80,6 +80,7 @@ impl eframe::App for AvioEditorApp {
                         proxy_path: None,
                         scenes: Vec::new(),
                         silence_regions: Vec::new(),
+                        waveform: Vec::new(),
                         in_point: None,
                         out_point: None,
                     });
@@ -103,6 +104,12 @@ impl eframe::App for AvioEditorApp {
                     tokio::task::spawn_blocking(move || {
                         let regions = analysis::detect_silence(&path_for_silence);
                         let _ = silence_tx.send((clip_idx, regions));
+                    });
+                    let waveform_tx = self.state.waveform_tx.clone();
+                    let path_for_waveform = path.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let waveform = analysis::extract_waveform(&path_for_waveform, 512);
+                        let _ = waveform_tx.send((clip_idx, waveform));
                     });
                 }
                 Err(e) => log::warn!("probe failed for trimmed clip {path:?}: {e}"),
@@ -200,6 +207,11 @@ impl eframe::App for AvioEditorApp {
         while let Ok((idx, regions)) = self.state.silence_rx.try_recv() {
             if let Some(clip) = self.state.clips.get_mut(idx) {
                 clip.silence_regions = regions;
+            }
+        }
+        while let Ok((idx, waveform)) = self.state.waveform_rx.try_recv() {
+            if let Some(clip) = self.state.clips.get_mut(idx) {
+                clip.waveform = waveform;
             }
         }
         while let Ok((path, w, h, rgb)) = self.state.thumbnail_rx.try_recv() {
@@ -369,6 +381,34 @@ impl eframe::App for AvioEditorApp {
                                             && cr.min.x <= lane_rect.right()
                                         {
                                             ui.painter().rect_filled(cr, 4.0, clip_color);
+                                            // Waveform — A1 track only
+                                            if track.kind == state::TrackKind::Audio1
+                                                && !source.waveform.is_empty()
+                                            {
+                                                let n = source.waveform.len();
+                                                let mid_y = cr.center().y;
+                                                let half_h = cr.height() * 0.4;
+                                                for (i, &amp) in source.waveform.iter().enumerate()
+                                                {
+                                                    let x = cr.left()
+                                                        + (i as f32 / n as f32) * cr.width();
+                                                    if x >= lane_rect.left()
+                                                        && x <= lane_rect.right()
+                                                    {
+                                                        ui.painter().vline(
+                                                            x,
+                                                            (mid_y - amp * half_h)
+                                                                ..=(mid_y + amp * half_h),
+                                                            egui::Stroke::new(
+                                                                1.0,
+                                                                egui::Color32::from_rgb(
+                                                                    100, 200, 100,
+                                                                ),
+                                                            ),
+                                                        );
+                                                    }
+                                                }
+                                            }
                                             let name = source
                                                 .path
                                                 .file_name()
@@ -472,6 +512,7 @@ impl eframe::App for AvioEditorApp {
                                     proxy_path: None,
                                     scenes: Vec::new(),
                                     silence_regions: Vec::new(),
+                                    waveform: Vec::new(),
                                     in_point: None,
                                     out_point: None,
                                 });
@@ -498,6 +539,13 @@ impl eframe::App for AvioEditorApp {
                                 tokio::task::spawn_blocking(move || {
                                     let regions = analysis::detect_silence(&path_for_silence);
                                     let _ = silence_tx.send((clip_idx, regions));
+                                });
+                                let waveform_tx = self.state.waveform_tx.clone();
+                                let path_for_waveform = path.clone();
+                                tokio::task::spawn_blocking(move || {
+                                    let waveform =
+                                        analysis::extract_waveform(&path_for_waveform, 512);
+                                    let _ = waveform_tx.send((clip_idx, waveform));
                                 });
                             }
                             Err(e) => log::warn!("probe failed for {path:?}: {e}"),
