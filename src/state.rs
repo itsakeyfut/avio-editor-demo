@@ -12,6 +12,8 @@ pub struct AppState {
     pub scene_rx: mpsc::Receiver<(usize, Vec<Duration>)>,
     pub keyframe_tx: mpsc::SyncSender<Vec<Duration>>,
     pub keyframe_rx: mpsc::Receiver<Vec<Duration>>,
+    pub silence_tx: mpsc::SyncSender<(usize, Vec<(Duration, Duration)>)>,
+    pub silence_rx: mpsc::Receiver<(usize, Vec<(Duration, Duration)>)>,
     pub timeline: TimelineState,
     pub trim_jobs: Vec<TrimJobHandle>,
     pub gif_jobs: Vec<GifJobHandle>,
@@ -38,6 +40,7 @@ impl Default for AppState {
         let (thumbnail_tx, thumbnail_rx) = mpsc::sync_channel(32);
         let (scene_tx, scene_rx) = mpsc::sync_channel(32);
         let (keyframe_tx, keyframe_rx) = mpsc::sync_channel(4);
+        let (silence_tx, silence_rx) = mpsc::sync_channel(32);
         Self {
             clips: Vec::new(),
             selected_clip_index: None,
@@ -47,6 +50,8 @@ impl Default for AppState {
             scene_rx,
             keyframe_tx,
             keyframe_rx,
+            silence_tx,
+            silence_rx,
             timeline: TimelineState::default(),
             trim_jobs: Vec::new(),
             gif_jobs: Vec::new(),
@@ -77,6 +82,7 @@ pub struct ImportedClip {
     pub thumbnail: Option<egui::TextureHandle>,
     pub proxy_path: Option<PathBuf>,
     pub scenes: Vec<Duration>,
+    pub silence_regions: Vec<(Duration, Duration)>,
     pub in_point: Option<Duration>,
     pub out_point: Option<Duration>,
 }
