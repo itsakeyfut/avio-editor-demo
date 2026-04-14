@@ -5,6 +5,7 @@ mod state;
 mod thumbnail;
 mod trim;
 use std::sync::Arc;
+use std::time::Duration;
 
 use state::{AppState, GifStatus, ImportedClip, TrimStatus};
 
@@ -113,6 +114,9 @@ impl eframe::App for AvioEditorApp {
         if let Ok(mut guard) = self.state.frame_handle.try_lock()
             && let Some(frame) = guard.take()
         {
+            // avio API gap: PreviewPlayer has no current_pts() — track pts
+            // from TimedRgbaSink::push_frame() into AppState::current_pts.
+            self.state.current_pts = Some(frame.pts);
             let image = egui::ColorImage::from_rgba_unmultiplied(
                 [frame.width as usize, frame.height as usize],
                 &frame.data,
@@ -320,6 +324,7 @@ impl eframe::App for AvioEditorApp {
                             path,
                             Arc::clone(&self.state.frame_handle),
                             ctx.clone(),
+                            None,
                         );
                         self.state.player_thread = Some(thread);
                         self.state.pending_stop_rx = Some(stop_rx);
@@ -454,7 +459,12 @@ impl eframe::App for AvioEditorApp {
                 .map(|h| !h.is_finished())
                 .unwrap_or(false);
 
-            let ctrl_height = 36.0;
+            // Two control rows when a clip is loaded: seek bar + timecode, then buttons.
+            let ctrl_height = if self.state.monitor_clip_index.is_some() {
+                72.0
+            } else {
+                36.0
+            };
             let available = ui.available_size();
             let video_size = egui::vec2(available.x, (available.y - ctrl_height).max(0.0));
 
@@ -469,6 +479,64 @@ impl eframe::App for AvioEditorApp {
             }
 
             ui.separator();
+
+            // Seek bar + timecode row (only when a clip is loaded).
+            if let Some(idx) = self.state.monitor_clip_index {
+                let duration_secs = self
+                    .state
+                    .clips
+                    .get(idx)
+                    .map(|c| c.info.duration().as_secs_f64())
+                    .unwrap_or(1.0)
+                    .max(1.0);
+
+                // Sync slider from current PTS while playing.
+                // avio API gap: PreviewPlayer has no current_pts() method —
+                // we track pts from TimedRgbaSink::push_frame() into
+                // AppState::current_pts.
+                if is_playing && let Some(pts) = self.state.current_pts {
+                    self.state.seek_pos_secs = pts.as_secs_f64().min(duration_secs);
+                }
+
+                ui.horizontal(|ui| {
+                    let slider_resp = ui.add(
+                        egui::Slider::new(&mut self.state.seek_pos_secs, 0.0..=duration_secs)
+                            .show_value(false),
+                    );
+
+                    // Timecode: HH:MM:SS.mmm
+                    let t = self.state.seek_pos_secs;
+                    let h = (t / 3600.0) as u64;
+                    let m = ((t % 3600.0) / 60.0) as u64;
+                    let s = (t % 60.0) as u64;
+                    let ms = ((t % 1.0) * 1000.0) as u64;
+                    ui.monospace(format!("{h:02}:{m:02}:{s:02}.{ms:03}"));
+
+                    // avio API gap: seek() takes &mut self — cannot call during
+                    // run(). Workaround: stop + respawn from the target position.
+                    // avio gap: DecodeBuffer::seek_coarse() is not surfaced at
+                    // PreviewPlayer level; only exact seek is available.
+                    if slider_resp.drag_stopped() {
+                        if let Some(stop) = self.state.player_stop.take() {
+                            stop.store(true, std::sync::atomic::Ordering::Release);
+                        }
+                        self.state.player_thread = None;
+                        self.state.pending_stop_rx = None;
+                        let target = Duration::from_secs_f64(self.state.seek_pos_secs);
+                        if let Some(path) = self.state.clips.get(idx).map(|c| c.path.clone()) {
+                            let (thread, stop_rx) = player::spawn_player(
+                                path,
+                                Arc::clone(&self.state.frame_handle),
+                                ctx.clone(),
+                                Some(target),
+                            );
+                            self.state.player_thread = Some(thread);
+                            self.state.pending_stop_rx = Some(stop_rx);
+                        }
+                    }
+                });
+            }
+
             ui.horizontal(|ui| {
                 if is_playing {
                     // avio API gap: pause() takes &mut self so it cannot be called
@@ -498,6 +566,7 @@ impl eframe::App for AvioEditorApp {
                             path,
                             Arc::clone(&self.state.frame_handle),
                             ctx.clone(),
+                            None,
                         );
                         self.state.player_thread = Some(thread);
                         self.state.pending_stop_rx = Some(stop_rx);

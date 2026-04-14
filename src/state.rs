@@ -19,6 +19,8 @@ pub struct AppState {
     pub player_stop: Option<Arc<AtomicBool>>,
     pub pending_stop_rx: Option<mpsc::Receiver<Arc<AtomicBool>>>,
     pub monitor_clip_index: Option<usize>,
+    pub seek_pos_secs: f64,
+    pub current_pts: Option<Duration>,
 }
 
 impl Default for AppState {
@@ -41,6 +43,8 @@ impl Default for AppState {
             player_stop: None,
             pending_stop_rx: None,
             monitor_clip_index: None,
+            seek_pos_secs: 0.0,
+            current_pts: None,
         }
     }
 }
