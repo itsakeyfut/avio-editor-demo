@@ -535,10 +535,22 @@ impl eframe::App for AvioEditorApp {
                     let ms = ((t % 1.0) * 1000.0) as u64;
                     ui.monospace(format!("{h:02}:{m:02}:{s:02}.{ms:03}"));
 
+                    // Seek mode toggle.
+                    // avio API gap: DecodeBuffer::seek_coarse() is not exposed at
+                    // PreviewPlayer level, so both modes currently use player.seek()
+                    // (exact). The toggle is wired for when avio surfaces coarse seek.
+                    let mode_label = if self.state.seek_exact {
+                        "Exact"
+                    } else {
+                        "Coarse"
+                    };
+                    ui.toggle_value(&mut self.state.seek_exact, mode_label)
+                        .on_hover_text(
+                            "Exact: frame-accurate but slow\nCoarse: nearest keyframe, fast",
+                        );
+
                     // avio API gap: seek() takes &mut self — cannot call during
                     // run(). Workaround: stop + respawn from the target position.
-                    // avio gap: DecodeBuffer::seek_coarse() is not surfaced at
-                    // PreviewPlayer level; only exact seek is available.
                     if slider_resp.drag_stopped() {
                         if let Some(stop) = self.state.player_stop.take() {
                             stop.store(true, std::sync::atomic::Ordering::Release);
