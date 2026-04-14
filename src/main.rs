@@ -219,47 +219,191 @@ impl eframe::App for AvioEditorApp {
                 ui.heading("Timeline");
                 ui.separator();
 
+                const TRACK_HEIGHT: f32 = 40.0;
+                const LABEL_WIDTH: f32 = 40.0;
+
                 let pps = self.state.timeline.pixels_per_second;
-                let available_width = ui.available_width();
-                let (_, ruler_rect) = ui.allocate_space(egui::vec2(available_width, 24.0));
-                let painter = ui.painter_at(ruler_rect);
 
-                painter.rect_filled(ruler_rect, 0.0, egui::Color32::from_gray(40));
+                // Dynamic content width: max clip end-time × pps + 200 px padding, min 1200 px.
+                let max_end_secs = self
+                    .state
+                    .timeline
+                    .tracks
+                    .iter()
+                    .flat_map(|t| t.clips.iter())
+                    .filter_map(|tc| {
+                        self.state.clips.get(tc.source_index).map(|c| {
+                            let dur = match (tc.in_point, tc.out_point) {
+                                (Some(i), Some(o)) if o > i => o - i,
+                                _ => c.info.duration(),
+                            };
+                            tc.start_on_track.as_secs_f32() + dur.as_secs_f32()
+                        })
+                    })
+                    .fold(0.0f32, f32::max);
+                let content_width = (max_end_secs * pps + 200.0).max(1200.0);
 
-                // Time tick marks every 5 s
-                let mut t = 0.0f32;
-                while t * pps < ruler_rect.width() {
-                    let x = ruler_rect.left() + t * pps;
-                    painter.vline(
-                        x,
-                        ruler_rect.y_range(),
-                        egui::Stroke::new(1.0, egui::Color32::GRAY),
-                    );
-                    painter.text(
-                        egui::pos2(x + 2.0, ruler_rect.top() + 2.0),
-                        egui::Align2::LEFT_TOP,
-                        format!("{t:.0}s"),
-                        egui::FontId::monospace(10.0),
-                        egui::Color32::GRAY,
-                    );
-                    t += 5.0;
-                }
+                let mut pending_clips: Vec<(usize, usize, f32)> = Vec::new();
 
-                // Orange scene-change markers for V1 clips
-                for tc in &self.state.timeline.tracks[0].clips {
-                    if let Some(source) = self.state.clips.get(tc.source_index) {
-                        for &scene_ts in &source.scenes {
-                            let track_ts = tc.start_on_track + scene_ts;
-                            let x = ruler_rect.left() + track_ts.as_secs_f32() * pps;
-                            if x >= ruler_rect.left() && x <= ruler_rect.right() {
-                                painter.vline(
-                                    x,
-                                    ruler_rect.y_range(),
-                                    egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 165, 0)),
-                                );
+                egui::ScrollArea::horizontal()
+                    .id_salt("timeline_scroll")
+                    .show(ui, |ui| {
+                        // ── Ruler ──────────────────────────────────────────────
+                        let (_, ruler_rect) = ui.allocate_space(egui::vec2(content_width, 24.0));
+                        let painter = ui.painter_at(ruler_rect);
+                        painter.rect_filled(ruler_rect, 0.0, egui::Color32::from_gray(40));
+
+                        // Time tick marks every 5 s
+                        let mut t = 0.0f32;
+                        while t * pps < content_width {
+                            let x = ruler_rect.left() + t * pps;
+                            painter.vline(
+                                x,
+                                ruler_rect.y_range(),
+                                egui::Stroke::new(1.0, egui::Color32::GRAY),
+                            );
+                            painter.text(
+                                egui::pos2(x + 2.0, ruler_rect.top() + 2.0),
+                                egui::Align2::LEFT_TOP,
+                                format!("{t:.0}s"),
+                                egui::FontId::monospace(10.0),
+                                egui::Color32::GRAY,
+                            );
+                            t += 5.0;
+                        }
+
+                        // Orange scene-change markers for V1 clips
+                        for tc in &self.state.timeline.tracks[0].clips {
+                            if let Some(source) = self.state.clips.get(tc.source_index) {
+                                for &scene_ts in &source.scenes {
+                                    let x = ruler_rect.left()
+                                        + (tc.start_on_track + scene_ts).as_secs_f32() * pps;
+                                    if x >= ruler_rect.left() && x <= ruler_rect.right() {
+                                        painter.vline(
+                                            x,
+                                            ruler_rect.y_range(),
+                                            egui::Stroke::new(
+                                                1.0,
+                                                egui::Color32::from_rgb(255, 165, 0),
+                                            ),
+                                        );
+                                    }
+                                }
                             }
                         }
-                    }
+
+                        // ── Track lanes ────────────────────────────────────────
+                        for (track_idx, track) in self.state.timeline.tracks.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                // Track label
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(LABEL_WIDTH, TRACK_HEIGHT),
+                                    egui::Layout::centered_and_justified(
+                                        egui::Direction::LeftToRight,
+                                    ),
+                                    |ui| {
+                                        ui.label(match track.kind {
+                                            state::TrackKind::Video1 => "V1",
+                                            state::TrackKind::Video2 => "V2",
+                                            state::TrackKind::Audio1 => "A1",
+                                        });
+                                    },
+                                );
+
+                                // Lane drop zone
+                                let (lane_rect, lane_resp) = ui.allocate_exact_size(
+                                    egui::vec2(content_width - LABEL_WIDTH, TRACK_HEIGHT),
+                                    egui::Sense::hover(),
+                                );
+
+                                // Lane background — highlight when a clip is dragged over
+                                let bg = if lane_resp.dnd_hover_payload::<usize>().is_some() {
+                                    egui::Color32::from_gray(55)
+                                } else {
+                                    egui::Color32::from_gray(35)
+                                };
+                                ui.painter().rect_filled(lane_rect, 0.0, bg);
+                                ui.painter().rect_stroke(
+                                    lane_rect,
+                                    0.0,
+                                    egui::Stroke::new(1.0, egui::Color32::from_gray(60)),
+                                    egui::StrokeKind::Inside,
+                                );
+
+                                // Clip rectangles
+                                let clip_color = match track.kind {
+                                    state::TrackKind::Video1 | state::TrackKind::Video2 => {
+                                        egui::Color32::from_rgb(70, 130, 180) // steel blue
+                                    }
+                                    state::TrackKind::Audio1 => {
+                                        egui::Color32::from_rgb(70, 150, 120) // teal
+                                    }
+                                };
+                                for tc in &track.clips {
+                                    if let Some(source) = self.state.clips.get(tc.source_index) {
+                                        let eff_dur = match (tc.in_point, tc.out_point) {
+                                            (Some(i), Some(o)) if o > i => o - i,
+                                            _ => source.info.duration(),
+                                        };
+                                        let x = lane_rect.left()
+                                            + tc.start_on_track.as_secs_f32() * pps;
+                                        let w = eff_dur.as_secs_f32() * pps;
+                                        let cr = egui::Rect::from_min_size(
+                                            egui::pos2(x, lane_rect.top()),
+                                            egui::vec2(w.max(2.0), TRACK_HEIGHT),
+                                        );
+                                        if cr.max.x >= lane_rect.left()
+                                            && cr.min.x <= lane_rect.right()
+                                        {
+                                            ui.painter().rect_filled(cr, 4.0, clip_color);
+                                            let name = source
+                                                .path
+                                                .file_name()
+                                                .unwrap_or_default()
+                                                .to_string_lossy();
+                                            ui.painter().text(
+                                                cr.left_center() + egui::vec2(4.0, 0.0),
+                                                egui::Align2::LEFT_CENTER,
+                                                name.as_ref(),
+                                                egui::FontId::proportional(11.0),
+                                                egui::Color32::WHITE,
+                                            );
+                                        }
+                                    }
+                                }
+
+                                // Drop handling
+                                if let Some(clip_idx_arc) = lane_resp.dnd_release_payload::<usize>()
+                                {
+                                    let ptr_x = ui.input(|i| {
+                                        i.pointer
+                                            .latest_pos()
+                                            .map(|p| p.x)
+                                            .unwrap_or(lane_rect.left())
+                                    });
+                                    let start_secs = ((ptr_x - lane_rect.left()) / pps).max(0.0);
+                                    pending_clips.push((track_idx, *clip_idx_arc, start_secs));
+                                }
+                            });
+                        }
+                    }); // end ScrollArea
+
+                // Apply drops after the ScrollArea closure to avoid borrow conflicts.
+                for (track_idx, clip_idx, start_secs) in pending_clips {
+                    let (in_pt, out_pt) = self
+                        .state
+                        .clips
+                        .get(clip_idx)
+                        .map(|c| (c.in_point, c.out_point))
+                        .unwrap_or_default();
+                    self.state.timeline.tracks[track_idx]
+                        .clips
+                        .push(state::TimelineClip {
+                            source_index: clip_idx,
+                            start_on_track: Duration::from_secs_f32(start_secs),
+                            in_point: in_pt,
+                            out_point: out_pt,
+                        });
                 }
             });
 
@@ -335,11 +479,23 @@ impl eframe::App for AvioEditorApp {
                             }
                         }
                         let name = clip.path.file_name().unwrap_or_default().to_string_lossy();
-                        let resp = ui.selectable_label(selected, name.as_ref());
-                        if resp.clicked() {
+                        let dnd_id = egui::Id::new(("clip_dnd", idx));
+                        let is_dragging = ui.ctx().is_being_dragged(dnd_id);
+                        let dnd = ui.dnd_drag_source(dnd_id, idx, |ui| {
+                            ui.selectable_label(selected, name.as_ref())
+                        });
+                        // dnd_drag_source adds CursorIcon::Grab on hover.
+                        // Override: show Grabbing only while actively dragging,
+                        // Default cursor otherwise.
+                        if is_dragging {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                        } else if dnd.response.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
+                        }
+                        if dnd.inner.clicked() {
                             clicked_idx = Some(idx);
                         }
-                        if resp.double_clicked() {
+                        if dnd.inner.double_clicked() {
                             dbl_clicked_idx = Some(idx);
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -612,12 +768,101 @@ impl eframe::App for AvioEditorApp {
             let available = ui.available_size();
             let video_size = egui::vec2(available.x, (available.y - ctrl_height).max(0.0));
 
-            if let Some(tex) = &self.state.preview_texture {
-                ui.image(egui::load::SizedTexture::new(tex.id(), video_size));
+            if self.state.monitor_clip_index.is_some() {
+                // Playback mode: show video frame (or "Loading…" while the first frame arrives).
+                if let Some(tex) = &self.state.preview_texture {
+                    ui.image(egui::load::SizedTexture::new(tex.id(), video_size));
+                } else {
+                    ui.allocate_ui(video_size, |ui| {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("Loading…");
+                        });
+                    });
+                }
+            } else if let Some(idx) = self.state.selected_clip_index
+                && let Some(clip) = self.state.clips.get(idx)
+            {
+                // Info mode: show MediaInfo for the selected clip.
+                ui.allocate_ui(video_size, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("probe_info_scroll")
+                        .show(ui, |ui| {
+                            let file_name =
+                                clip.path.file_name().unwrap_or_default().to_string_lossy();
+                            ui.heading(file_name.as_ref());
+                            ui.separator();
+                            let info = &clip.info;
+                            egui::Grid::new("probe_info_grid")
+                                .num_columns(2)
+                                .spacing([12.0, 4.0])
+                                .show(ui, |ui| {
+                                    ui.strong("Container:");
+                                    ui.label(info.format());
+                                    ui.end_row();
+
+                                    let d = info.duration();
+                                    let total_secs = d.as_secs();
+                                    ui.strong("Duration:");
+                                    ui.label(format!(
+                                        "{}:{:02}.{:03}",
+                                        total_secs / 60,
+                                        total_secs % 60,
+                                        d.subsec_millis()
+                                    ));
+                                    ui.end_row();
+
+                                    let size_mb = info.file_size() as f64 / 1_000_000.0;
+                                    ui.strong("File size:");
+                                    ui.label(format!("{size_mb:.1} MB"));
+                                    ui.end_row();
+
+                                    if let Some(bps) = info.bitrate() {
+                                        ui.strong("Bitrate:");
+                                        ui.label(format!("{} kb/s", bps / 1000));
+                                        ui.end_row();
+                                    }
+
+                                    if let Some(v) = info.primary_video() {
+                                        ui.strong("Video:");
+                                        ui.label(format!(
+                                            "{} {}×{} {:.3} fps",
+                                            v.codec().display_name(),
+                                            v.width(),
+                                            v.height(),
+                                            v.fps()
+                                        ));
+                                        ui.end_row();
+
+                                        if let Some(br) = v.bitrate() {
+                                            ui.strong("V-bitrate:");
+                                            ui.label(format!("{} kb/s", br / 1000));
+                                            ui.end_row();
+                                        }
+                                    }
+
+                                    if let Some(a) = info.primary_audio() {
+                                        ui.strong("Audio:");
+                                        ui.label(format!(
+                                            "{} {} Hz {}ch",
+                                            a.codec().display_name(),
+                                            a.sample_rate(),
+                                            a.channels()
+                                        ));
+                                        ui.end_row();
+
+                                        if let Some(br) = a.bitrate() {
+                                            ui.strong("A-bitrate:");
+                                            ui.label(format!("{} kb/s", br / 1000));
+                                            ui.end_row();
+                                        }
+                                    }
+                                });
+                        });
+                });
             } else {
                 ui.allocate_ui(video_size, |ui| {
                     ui.centered_and_justified(|ui| {
-                        ui.label("Double-click a clip to load it");
+                        ui.label("Click to view clip info · Double-click to play");
                     });
                 });
             }
