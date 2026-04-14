@@ -1,8 +1,9 @@
 mod analysis;
+mod gif;
 mod state;
 mod thumbnail;
 mod trim;
-use state::{AppState, ImportedClip, TrimStatus};
+use state::{AppState, GifStatus, ImportedClip, TrimStatus};
 
 fn main() -> eframe::Result<()> {
     env_logger::init();
@@ -76,6 +77,25 @@ impl eframe::App for AvioEditorApp {
                 }
                 Err(e) => log::warn!("probe failed for trimmed clip {path:?}: {e}"),
             }
+        }
+
+        // Drain completed GIF jobs each frame.
+        let mut gif_done: Vec<std::path::PathBuf> = Vec::new();
+        self.state
+            .gif_jobs
+            .retain(|job| match job.status.lock().unwrap().clone() {
+                GifStatus::Running => true,
+                GifStatus::Done(path) => {
+                    gif_done.push(path);
+                    false
+                }
+                GifStatus::Failed(msg) => {
+                    log::warn!("GIF export failed: {msg}");
+                    false
+                }
+            });
+        for path in gif_done {
+            log::info!("GIF exported: {}", path.display());
         }
 
         // Drain completed thumbnail results each frame.
@@ -332,6 +352,22 @@ impl eframe::App for AvioEditorApp {
                             clip.out_point.unwrap(),
                         );
                         self.state.trim_jobs.push(handle);
+                    }
+                    if ui.button("Export GIF").clicked()
+                        && let Some(output_path) = rfd::FileDialog::new()
+                            .add_filter("GIF", &["gif"])
+                            .set_file_name("preview.gif")
+                            .save_file()
+                    {
+                        let handle = gif::spawn_gif(
+                            idx,
+                            clip.path.clone(),
+                            output_path,
+                            clip.in_point,
+                            clip.out_point,
+                            clip.info.duration(),
+                        );
+                        self.state.gif_jobs.push(handle);
                     }
                 }
             });

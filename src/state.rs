@@ -11,6 +11,7 @@ pub struct AppState {
     pub scene_rx: mpsc::Receiver<(usize, Vec<Duration>)>,
     pub timeline: TimelineState,
     pub trim_jobs: Vec<TrimJobHandle>,
+    pub gif_jobs: Vec<GifJobHandle>,
 }
 
 impl Default for AppState {
@@ -26,6 +27,7 @@ impl Default for AppState {
             scene_rx,
             timeline: TimelineState::default(),
             trim_jobs: Vec::new(),
+            gif_jobs: Vec::new(),
         }
     }
 }
@@ -52,6 +54,19 @@ pub enum TrimStatus {
 pub struct TrimJobHandle {
     pub clip_index: usize,
     pub status: Arc<Mutex<TrimStatus>>,
+}
+
+#[derive(Clone)]
+pub enum GifStatus {
+    Running,
+    Done(PathBuf),
+    Failed(String),
+}
+
+#[allow(dead_code)]
+pub struct GifJobHandle {
+    pub clip_index: usize,
+    pub status: Arc<Mutex<GifStatus>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
