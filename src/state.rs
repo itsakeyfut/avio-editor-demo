@@ -3,6 +3,7 @@ use std::sync::mpsc;
 
 pub struct AppState {
     pub clips: Vec<ImportedClip>,
+    pub selected_clip_index: Option<usize>,
     pub thumbnail_tx: mpsc::SyncSender<(PathBuf, u32, u32, Vec<u8>)>,
     pub thumbnail_rx: mpsc::Receiver<(PathBuf, u32, u32, Vec<u8>)>,
 }
@@ -12,6 +13,7 @@ impl Default for AppState {
         let (thumbnail_tx, thumbnail_rx) = mpsc::sync_channel(32);
         Self {
             clips: Vec::new(),
+            selected_clip_index: None,
             thumbnail_tx,
             thumbnail_rx,
         }
