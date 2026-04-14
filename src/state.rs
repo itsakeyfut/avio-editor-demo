@@ -15,6 +15,7 @@ pub struct AppState {
     pub timeline: TimelineState,
     pub trim_jobs: Vec<TrimJobHandle>,
     pub gif_jobs: Vec<GifJobHandle>,
+    pub proxy_jobs: Vec<ProxyJobHandle>,
     pub frame_handle: Arc<Mutex<Option<avio::RgbaFrame>>>,
     pub preview_texture: Option<egui::TextureHandle>,
     pub player_thread: Option<std::thread::JoinHandle<()>>,
@@ -49,6 +50,7 @@ impl Default for AppState {
             timeline: TimelineState::default(),
             trim_jobs: Vec::new(),
             gif_jobs: Vec::new(),
+            proxy_jobs: Vec::new(),
             frame_handle: Arc::new(Mutex::new(None)),
             preview_texture: None,
             player_thread: None,
@@ -103,6 +105,19 @@ pub enum GifStatus {
 pub struct GifJobHandle {
     pub clip_index: usize,
     pub status: Arc<Mutex<GifStatus>>,
+}
+
+#[derive(Clone)]
+pub enum ProxyStatus {
+    Running,
+    Done(PathBuf),
+    Failed(String),
+}
+
+#[allow(dead_code)]
+pub struct ProxyJobHandle {
+    pub clip_index: usize,
+    pub status: Arc<Mutex<ProxyStatus>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
