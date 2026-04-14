@@ -99,8 +99,14 @@ pub fn spawn_player(
     frame_handle: Arc<Mutex<Option<RgbaFrame>>>,
     ctx: egui::Context,
     start_pos: Option<Duration>,
-) -> (std::thread::JoinHandle<()>, mpsc::Receiver<Arc<AtomicBool>>) {
+    proxy_dir: Option<PathBuf>,
+) -> (
+    std::thread::JoinHandle<()>,
+    mpsc::Receiver<Arc<AtomicBool>>,
+    mpsc::Receiver<bool>,
+) {
     let (stop_tx, stop_rx) = mpsc::sync_channel::<Arc<AtomicBool>>(1);
+    let (proxy_tx, proxy_rx) = mpsc::sync_channel::<bool>(1);
     let handle = std::thread::spawn(move || {
         let mut player = match avio::PreviewPlayer::open(&path) {
             Ok(p) => p,
@@ -117,6 +123,23 @@ pub fn spawn_player(
         {
             log::warn!("initial seek to {pos:?} failed: {e}");
         }
+        // Activate proxy transparently before play().
+        // use_proxy_if_available() scans proxy_dir for <stem>_half/quarter/eighth.mp4.
+        // Must be called after open() and before play(); calling after play() is a no-op.
+        let proxy_active = if let Some(ref dir) = proxy_dir {
+            let active = player.use_proxy_if_available(dir);
+            if active {
+                log::info!(
+                    "source monitor: proxy active — {}",
+                    player.active_source().display()
+                );
+            }
+            active
+        } else {
+            false
+        };
+        let _ = proxy_tx.send(proxy_active);
+
         // Send the stop handle back before blocking in run().
         let _ = stop_tx.send(player.stop_handle());
 
@@ -128,5 +151,5 @@ pub fn spawn_player(
         // Wake the render loop so the UI can update after playback ends.
         ctx.request_repaint();
     });
-    (handle, stop_rx)
+    (handle, stop_rx, proxy_rx)
 }
