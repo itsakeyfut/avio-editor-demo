@@ -14,6 +14,19 @@ pub fn enumerate_keyframes(path: &Path) -> Vec<Duration> {
     }
 }
 
+/// Returns (start, end) silence regions for the audio in the given file.
+///
+/// Returns an empty vec if the file has no audio stream or detection fails.
+pub fn detect_silence(path: &Path) -> Vec<(std::time::Duration, std::time::Duration)> {
+    match avio::SilenceDetector::new(path).run() {
+        Ok(regions) => regions.into_iter().map(|r| (r.start, r.end)).collect(),
+        Err(e) => {
+            log::warn!("silence detection failed for {path:?}: {e}");
+            Vec::new()
+        }
+    }
+}
+
 /// Detects scene changes and returns their timestamps.
 ///
 /// Returns an empty vec if the file has no video stream or detection fails.

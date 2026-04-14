@@ -79,6 +79,7 @@ impl eframe::App for AvioEditorApp {
                         thumbnail: None,
                         proxy_path: None,
                         scenes: Vec::new(),
+                        silence_regions: Vec::new(),
                         in_point: None,
                         out_point: None,
                     });
@@ -91,11 +92,18 @@ impl eframe::App for AvioEditorApp {
                             }
                         });
                         let scene_tx = self.state.scene_tx.clone();
+                        let path_for_scene = path.clone();
                         tokio::task::spawn_blocking(move || {
-                            let scenes = analysis::detect_scenes(&path);
+                            let scenes = analysis::detect_scenes(&path_for_scene);
                             let _ = scene_tx.send((clip_idx, scenes));
                         });
                     }
+                    let silence_tx = self.state.silence_tx.clone();
+                    let path_for_silence = path.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let regions = analysis::detect_silence(&path_for_silence);
+                        let _ = silence_tx.send((clip_idx, regions));
+                    });
                 }
                 Err(e) => log::warn!("probe failed for trimmed clip {path:?}: {e}"),
             }
@@ -187,6 +195,11 @@ impl eframe::App for AvioEditorApp {
         while let Ok((idx, scenes)) = self.state.scene_rx.try_recv() {
             if let Some(clip) = self.state.clips.get_mut(idx) {
                 clip.scenes = scenes;
+            }
+        }
+        while let Ok((idx, regions)) = self.state.silence_rx.try_recv() {
+            if let Some(clip) = self.state.clips.get_mut(idx) {
+                clip.silence_regions = regions;
             }
         }
         while let Ok((path, w, h, rgb)) = self.state.thumbnail_rx.try_recv() {
@@ -368,6 +381,31 @@ impl eframe::App for AvioEditorApp {
                                                 egui::FontId::proportional(11.0),
                                                 egui::Color32::WHITE,
                                             );
+                                            // Silence region overlays — A1 track only
+                                            if track.kind == state::TrackKind::Audio1 {
+                                                for &(start, end) in &source.silence_regions {
+                                                    let sx0 = lane_rect.left()
+                                                        + (tc.start_on_track + start).as_secs_f32()
+                                                            * pps;
+                                                    let sx1 = lane_rect.left()
+                                                        + (tc.start_on_track + end).as_secs_f32()
+                                                            * pps;
+                                                    let sr = egui::Rect::from_x_y_ranges(
+                                                        sx0..=sx1,
+                                                        lane_rect.y_range(),
+                                                    )
+                                                    .intersect(cr);
+                                                    if sr.is_positive() {
+                                                        ui.painter().rect_filled(
+                                                            sr,
+                                                            0.0,
+                                                            egui::Color32::from_rgba_premultiplied(
+                                                                0, 0, 0, 100,
+                                                            ),
+                                                        );
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -433,6 +471,7 @@ impl eframe::App for AvioEditorApp {
                                     thumbnail: None,
                                     proxy_path: None,
                                     scenes: Vec::new(),
+                                    silence_regions: Vec::new(),
                                     in_point: None,
                                     out_point: None,
                                 });
@@ -454,6 +493,12 @@ impl eframe::App for AvioEditorApp {
                                         let _ = scene_tx.send((clip_idx, scenes));
                                     });
                                 }
+                                let silence_tx = self.state.silence_tx.clone();
+                                let path_for_silence = path.clone();
+                                tokio::task::spawn_blocking(move || {
+                                    let regions = analysis::detect_silence(&path_for_silence);
+                                    let _ = silence_tx.send((clip_idx, regions));
+                                });
                             }
                             Err(e) => log::warn!("probe failed for {path:?}: {e}"),
                         }
