@@ -1,7 +1,8 @@
 mod analysis;
 mod state;
 mod thumbnail;
-use state::{AppState, ImportedClip};
+mod trim;
+use state::{AppState, ImportedClip, TrimStatus};
 
 fn main() -> eframe::Result<()> {
     env_logger::init();
@@ -28,6 +29,55 @@ struct AvioEditorApp {
 
 impl eframe::App for AvioEditorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Drain completed trim jobs each frame.
+        // Collect outcomes first to avoid borrowing trim_jobs and clips simultaneously.
+        let mut trim_done: Vec<std::path::PathBuf> = Vec::new();
+        self.state
+            .trim_jobs
+            .retain(|job| match job.status.lock().unwrap().clone() {
+                TrimStatus::Running => true,
+                TrimStatus::Done(path) => {
+                    trim_done.push(path);
+                    false
+                }
+                TrimStatus::Failed(msg) => {
+                    log::warn!("trim failed: {msg}");
+                    false
+                }
+            });
+        for path in trim_done {
+            match avio::open(&path) {
+                Ok(info) => {
+                    let has_video = info.primary_video().is_some();
+                    let clip_idx = self.state.clips.len();
+                    self.state.clips.push(ImportedClip {
+                        path: path.clone(),
+                        info,
+                        thumbnail: None,
+                        proxy_path: None,
+                        scenes: Vec::new(),
+                        in_point: None,
+                        out_point: None,
+                    });
+                    if has_video {
+                        let tx = self.state.thumbnail_tx.clone();
+                        let p = path.clone();
+                        tokio::task::spawn_blocking(move || {
+                            if let Some((w, h, rgb)) = thumbnail::select_best_thumbnail(&p) {
+                                let _ = tx.send((p, w, h, rgb));
+                            }
+                        });
+                        let scene_tx = self.state.scene_tx.clone();
+                        tokio::task::spawn_blocking(move || {
+                            let scenes = analysis::detect_scenes(&path);
+                            let _ = scene_tx.send((clip_idx, scenes));
+                        });
+                    }
+                }
+                Err(e) => log::warn!("probe failed for trimmed clip {path:?}: {e}"),
+            }
+        }
+
         // Drain completed thumbnail results each frame.
         while let Ok((idx, scenes)) = self.state.scene_rx.try_recv() {
             if let Some(clip) = self.state.clips.get_mut(idx) {
@@ -129,6 +179,8 @@ impl eframe::App for AvioEditorApp {
                                     thumbnail: None,
                                     proxy_path: None,
                                     scenes: Vec::new(),
+                                    in_point: None,
+                                    out_point: None,
                                 });
                                 let clip_idx = self.state.clips.len() - 1;
                                 if has_video {
@@ -262,6 +314,24 @@ impl eframe::App for AvioEditorApp {
                                 source_index: idx,
                                 start_on_track: start,
                             });
+                    }
+                    let can_trim = clip.in_point.is_some() && clip.out_point.is_some();
+                    if ui
+                        .add_enabled(can_trim, egui::Button::new("Trim & Save"))
+                        .clicked()
+                        && let Some(output_path) = rfd::FileDialog::new()
+                            .add_filter("MP4", &["mp4"])
+                            .set_file_name("trimmed.mp4")
+                            .save_file()
+                    {
+                        let handle = trim::spawn_trim(
+                            idx,
+                            clip.path.clone(),
+                            output_path,
+                            clip.in_point.unwrap(),
+                            clip.out_point.unwrap(),
+                        );
+                        self.state.trim_jobs.push(handle);
                     }
                 }
             });
