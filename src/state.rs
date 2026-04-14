@@ -114,6 +114,8 @@ pub struct Track {
 pub struct TimelineClip {
     pub source_index: usize,
     pub start_on_track: Duration,
+    pub in_point: Option<Duration>,
+    pub out_point: Option<Duration>,
 }
 
 pub struct TimelineState {

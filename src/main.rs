@@ -418,15 +418,26 @@ impl eframe::App for AvioEditorApp {
                             .clips
                             .last()
                             .map(|tc| {
-                                tc.start_on_track
-                                    + self.state.clips[tc.source_index].info.duration()
+                                let effective = match (tc.in_point, tc.out_point) {
+                                    (Some(i), Some(o)) if o > i => o - i,
+                                    _ => self.state.clips[tc.source_index].info.duration(),
+                                };
+                                tc.start_on_track + effective
                             })
+                            .unwrap_or_default();
+                        let (tc_in, tc_out) = self
+                            .state
+                            .clips
+                            .get(idx)
+                            .map(|c| (c.in_point, c.out_point))
                             .unwrap_or_default();
                         self.state.timeline.tracks[0]
                             .clips
                             .push(state::TimelineClip {
                                 source_index: idx,
                                 start_on_track: start,
+                                in_point: tc_in,
+                                out_point: tc_out,
                             });
                     }
                     let can_trim = clip.in_point.is_some() && clip.out_point.is_some();
@@ -486,7 +497,7 @@ impl eframe::App for AvioEditorApp {
 
             // Two control rows when a clip is loaded: seek bar + timecode, then buttons.
             let ctrl_height = if self.state.monitor_clip_index.is_some() {
-                100.0
+                128.0
             } else {
                 36.0
             };
@@ -528,6 +539,29 @@ impl eframe::App for AvioEditorApp {
                         egui::Slider::new(&mut self.state.seek_pos_secs, 0.0..=duration_secs)
                             .show_value(false),
                     );
+
+                    // Draw IN (green) and OUT (orange) markers on the seek bar.
+                    if let Some(clip) = self.state.clips.get(idx) {
+                        let r = slider_resp.rect;
+                        if let Some(in_pt) = clip.in_point {
+                            let x =
+                                r.left() + (in_pt.as_secs_f64() / duration_secs) as f32 * r.width();
+                            ui.painter().vline(
+                                x,
+                                r.y_range(),
+                                egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 200, 0)),
+                            );
+                        }
+                        if let Some(out_pt) = clip.out_point {
+                            let x = r.left()
+                                + (out_pt.as_secs_f64() / duration_secs) as f32 * r.width();
+                            ui.painter().vline(
+                                x,
+                                r.y_range(),
+                                egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 140, 0)),
+                            );
+                        }
+                    }
 
                     // Timecode: HH:MM:SS.mmm
                     let t = self.state.seek_pos_secs;
@@ -735,6 +769,56 @@ impl eframe::App for AvioEditorApp {
                                 self.state.pending_proxy_rx = Some(proxy_rx);
                                 self.state.proxy_active = false;
                             }
+                        }
+                    }
+                });
+            }
+
+            // IN/OUT marking row — visible whenever a clip is loaded.
+            if let Some(idx) = self.state.monitor_clip_index {
+                ui.horizontal(|ui| {
+                    if ui.small_button("[ Mark In").clicked() {
+                        let pts = Duration::from_secs_f64(self.state.seek_pos_secs);
+                        if let Some(clip) = self.state.clips.get_mut(idx) {
+                            clip.in_point = Some(pts);
+                        }
+                    }
+                    if ui.small_button("Mark Out ]").clicked() {
+                        let pts = Duration::from_secs_f64(self.state.seek_pos_secs);
+                        if let Some(clip) = self.state.clips.get_mut(idx) {
+                            clip.out_point = Some(pts);
+                        }
+                    }
+                    if let Some(clip) = self.state.clips.get(idx) {
+                        let fmt_tc = |d: Duration| {
+                            let t = d.as_secs_f64();
+                            let h = (t / 3600.0) as u64;
+                            let m = ((t % 3600.0) / 60.0) as u64;
+                            let s = (t % 60.0) as u64;
+                            let ms = ((t % 1.0) * 1000.0) as u64;
+                            format!("{h:02}:{m:02}:{s:02}.{ms:03}")
+                        };
+                        let in_str = clip
+                            .in_point
+                            .map(fmt_tc)
+                            .unwrap_or_else(|| "\u{2014}".into());
+                        let out_str = clip
+                            .out_point
+                            .map(fmt_tc)
+                            .unwrap_or_else(|| "\u{2014}".into());
+                        ui.colored_label(
+                            egui::Color32::from_rgb(0, 200, 0),
+                            format!("IN {in_str}"),
+                        );
+                        ui.colored_label(
+                            egui::Color32::from_rgb(255, 140, 0),
+                            format!("OUT {out_str}"),
+                        );
+                        // Warn if in_point ≥ out_point (invalid range).
+                        if let (Some(i), Some(o)) = (clip.in_point, clip.out_point)
+                            && i >= o
+                        {
+                            ui.colored_label(egui::Color32::RED, "!");
                         }
                     }
                 });
