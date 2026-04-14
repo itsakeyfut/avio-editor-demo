@@ -135,6 +135,7 @@ pub fn spawn_player(
     start_pos: Option<Duration>,
     proxy_dir: Option<PathBuf>,
     rate: Arc<AtomicU64>,
+    av_offset_ms: i64,
 ) -> (
     std::thread::JoinHandle<()>,
     mpsc::Receiver<Arc<AtomicBool>>,
@@ -158,6 +159,13 @@ pub fn spawn_player(
         {
             log::warn!("initial seek to {pos:?} failed: {e}");
         }
+        // Apply A/V offset before play().
+        // avio API gap: set_av_offset(&self) uses AtomicI64 so concurrent
+        // writes are safe, but there is no av_offset_handle() method.
+        // Without a handle the UI thread cannot reach the player while
+        // run() holds &mut self. Workaround: apply the offset on every spawn.
+        player.set_av_offset(av_offset_ms);
+
         // Activate proxy transparently before play().
         // use_proxy_if_available() scans proxy_dir for <stem>_half/quarter/eighth.mp4.
         // Must be called after open() and before play(); calling after play() is a no-op.
