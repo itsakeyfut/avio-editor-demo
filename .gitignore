@@ -5,3 +5,5 @@ assets
 .claude/commands/
 CLAUDE.md
 SESSION.md
+
+docs/issue*.md
