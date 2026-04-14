@@ -340,6 +340,7 @@ impl eframe::App for AvioEditorApp {
                             ctx.clone(),
                             None,
                             proxy_dir,
+                            Arc::clone(&self.state.rate_handle),
                         );
                         self.state.player_thread = Some(thread);
                         self.state.pending_stop_rx = Some(stop_rx);
@@ -572,6 +573,7 @@ impl eframe::App for AvioEditorApp {
                                 ctx.clone(),
                                 Some(target),
                                 proxy_dir,
+                                Arc::clone(&self.state.rate_handle),
                             );
                             self.state.player_thread = Some(thread);
                             self.state.pending_stop_rx = Some(stop_rx);
@@ -621,6 +623,7 @@ impl eframe::App for AvioEditorApp {
                             ctx.clone(),
                             None,
                             proxy_dir,
+                            Arc::clone(&self.state.rate_handle),
                         );
                         self.state.player_thread = Some(thread);
                         self.state.pending_stop_rx = Some(stop_rx);
@@ -628,6 +631,25 @@ impl eframe::App for AvioEditorApp {
                         self.state.proxy_active = false;
                     } else if !has_video {
                         ui.label("No video stream");
+                    }
+                }
+                // Rate selector — visible whenever a clip is loaded.
+                // avio API gap: PreviewPlayer has no set_rate() — rate is applied
+                // inside TimedRgbaSink::push_frame by scaling the sleep duration.
+                if self.state.monitor_clip_index.is_some() {
+                    ui.separator();
+                    for (rate, label) in
+                        [(0.25_f64, "0.25×"), (0.5, "0.5×"), (1.0, "1×"), (2.0, "2×")]
+                    {
+                        if ui
+                            .selectable_label(self.state.playback_rate == rate, label)
+                            .clicked()
+                        {
+                            self.state.playback_rate = rate;
+                            self.state
+                                .rate_handle
+                                .store(rate.to_bits(), std::sync::atomic::Ordering::Relaxed);
+                        }
                     }
                 }
             });

@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
@@ -32,30 +32,60 @@ use avio::RgbaFrame;
 /// for video-only files.
 struct TimedRgbaSink {
     frame_handle: Arc<Mutex<Option<RgbaFrame>>>,
-    /// `(wall_clock_start, base_pts)` set on the first received frame.
+    ctx: egui::Context,
+    /// `(wall_clock_start, base_pts)` set on the first frame (and reset on rate change).
     start: Option<(Instant, Duration)>,
+    /// Playback rate as `f64` bits stored atomically. Read each frame.
+    rate: Arc<AtomicU64>,
+    /// Last observed rate. When the rate changes, `start` is reset so the new
+    /// rate is applied from the current position rather than the clip origin.
+    last_rate: f64,
 }
 
 impl TimedRgbaSink {
-    fn new(frame_handle: Arc<Mutex<Option<RgbaFrame>>>) -> Self {
+    fn new(
+        frame_handle: Arc<Mutex<Option<RgbaFrame>>>,
+        ctx: egui::Context,
+        rate: Arc<AtomicU64>,
+    ) -> Self {
         Self {
             frame_handle,
+            ctx,
             start: None,
+            rate,
+            last_rate: 1.0,
         }
     }
 }
 
 impl avio::FrameSink for TimedRgbaSink {
     fn push_frame(&mut self, rgba: &[u8], width: u32, height: u32, pts: Duration) {
+        let rate = f64::from_bits(self.rate.load(Ordering::Relaxed));
+
+        // Reset the clock reference whenever the rate changes mid-playback.
+        // Without this, `target_wall = video_relative / new_rate` would place
+        // the target in the past for frames after a rate increase, causing
+        // all remaining frames to be delivered at decoder speed (no pacing).
+        if (rate - self.last_rate).abs() > f64::EPSILON {
+            self.start = None;
+            self.last_rate = rate;
+        }
+
         let (wall_start, pts_base) = self.start.get_or_insert_with(|| (Instant::now(), pts));
 
-        // How far into the clip is this frame?
+        // How far into the clip (from the current reference point) is this frame?
         let video_relative = pts.saturating_sub(*pts_base);
-        // How much wall time has elapsed since the first frame?
+        // How much wall time has elapsed since the reference point?
         let wall_elapsed = wall_start.elapsed();
 
-        // Sleep until the wall clock catches up with the video PTS.
-        if let Some(ahead) = video_relative.checked_sub(wall_elapsed)
+        // Target wall time for this frame at the requested rate.
+        // At 2×: target = video_relative / 2  → shorter sleep → faster.
+        // At 0.5×: target = video_relative * 2 → longer sleep  → slower.
+        // Note: dividing `video_relative` (not `ahead`) by rate is required.
+        // Dividing `ahead = video_relative − wall_elapsed` by rate yields
+        // a formula that converges to 1× regardless of the rate setting.
+        let target_wall = video_relative.div_f64(rate);
+        if let Some(ahead) = target_wall.checked_sub(wall_elapsed)
             && ahead > Duration::from_millis(1)
         {
             std::thread::sleep(ahead);
@@ -71,6 +101,10 @@ impl avio::FrameSink for TimedRgbaSink {
             height,
             pts,
         });
+        // Wake the render loop so egui picks up this frame without waiting for
+        // the next input event. Required at slow rates (0.5×, 0.25×) where the
+        // inter-frame sleep is long enough for eframe to go fully idle.
+        self.ctx.request_repaint();
     }
 }
 
@@ -100,6 +134,7 @@ pub fn spawn_player(
     ctx: egui::Context,
     start_pos: Option<Duration>,
     proxy_dir: Option<PathBuf>,
+    rate: Arc<AtomicU64>,
 ) -> (
     std::thread::JoinHandle<()>,
     mpsc::Receiver<Arc<AtomicBool>>,
@@ -143,7 +178,11 @@ pub fn spawn_player(
         // Send the stop handle back before blocking in run().
         let _ = stop_tx.send(player.stop_handle());
 
-        player.set_sink(Box::new(TimedRgbaSink::new(frame_handle)));
+        player.set_sink(Box::new(TimedRgbaSink::new(
+            frame_handle,
+            ctx.clone(),
+            rate,
+        )));
         player.play();
         if let Err(e) = player.run() {
             log::warn!("PreviewPlayer::run failed: {e}");
