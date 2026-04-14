@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 pub struct AppState {
@@ -10,6 +10,7 @@ pub struct AppState {
     pub scene_tx: mpsc::SyncSender<(usize, Vec<Duration>)>,
     pub scene_rx: mpsc::Receiver<(usize, Vec<Duration>)>,
     pub timeline: TimelineState,
+    pub trim_jobs: Vec<TrimJobHandle>,
 }
 
 impl Default for AppState {
@@ -24,6 +25,7 @@ impl Default for AppState {
             scene_tx,
             scene_rx,
             timeline: TimelineState::default(),
+            trim_jobs: Vec::new(),
         }
     }
 }
@@ -35,6 +37,21 @@ pub struct ImportedClip {
     pub thumbnail: Option<egui::TextureHandle>,
     pub proxy_path: Option<PathBuf>,
     pub scenes: Vec<Duration>,
+    pub in_point: Option<Duration>,
+    pub out_point: Option<Duration>,
+}
+
+#[derive(Clone)]
+pub enum TrimStatus {
+    Running,
+    Done(PathBuf),
+    Failed(String),
+}
+
+#[allow(dead_code)]
+pub struct TrimJobHandle {
+    pub clip_index: usize,
+    pub status: Arc<Mutex<TrimStatus>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
