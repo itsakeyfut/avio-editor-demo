@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
@@ -12,6 +13,12 @@ pub struct AppState {
     pub timeline: TimelineState,
     pub trim_jobs: Vec<TrimJobHandle>,
     pub gif_jobs: Vec<GifJobHandle>,
+    pub frame_handle: Arc<Mutex<Option<avio::RgbaFrame>>>,
+    pub preview_texture: Option<egui::TextureHandle>,
+    pub player_thread: Option<std::thread::JoinHandle<()>>,
+    pub player_stop: Option<Arc<AtomicBool>>,
+    pub pending_stop_rx: Option<mpsc::Receiver<Arc<AtomicBool>>>,
+    pub monitor_clip_index: Option<usize>,
 }
 
 impl Default for AppState {
@@ -28,6 +35,12 @@ impl Default for AppState {
             timeline: TimelineState::default(),
             trim_jobs: Vec::new(),
             gif_jobs: Vec::new(),
+            frame_handle: Arc::new(Mutex::new(None)),
+            preview_texture: None,
+            player_thread: None,
+            player_stop: None,
+            pending_stop_rx: None,
+            monitor_clip_index: None,
         }
     }
 }
