@@ -110,6 +110,14 @@ impl eframe::App for AvioEditorApp {
             self.state.pending_stop_rx = None;
         }
 
+        // Drain proxy-active status from a freshly spawned player thread.
+        if let Some(rx) = &self.state.pending_proxy_rx
+            && let Ok(active) = rx.try_recv()
+        {
+            self.state.proxy_active = active;
+            self.state.pending_proxy_rx = None;
+        }
+
         // Poll for the latest decoded frame from the player sink.
         if let Ok(mut guard) = self.state.frame_handle.try_lock()
             && let Some(frame) = guard.take()
@@ -320,14 +328,23 @@ impl eframe::App for AvioEditorApp {
                     if has_video
                         && let Some(path) = self.state.clips.get(idx).map(|c| c.path.clone())
                     {
-                        let (thread, stop_rx) = player::spawn_player(
+                        let proxy_dir = self
+                            .state
+                            .clips
+                            .get(idx)
+                            .and_then(|c| c.path.parent())
+                            .map(|p| p.join("proxies"));
+                        let (thread, stop_rx, proxy_rx) = player::spawn_player(
                             path,
                             Arc::clone(&self.state.frame_handle),
                             ctx.clone(),
                             None,
+                            proxy_dir,
                         );
                         self.state.player_thread = Some(thread);
                         self.state.pending_stop_rx = Some(stop_rx);
+                        self.state.pending_proxy_rx = Some(proxy_rx);
+                        self.state.proxy_active = false;
                     }
                 }
 
@@ -449,7 +466,13 @@ impl eframe::App for AvioEditorApp {
 
         // 4. Center: Source Monitor (must be last)
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Source Monitor");
+            ui.horizontal(|ui| {
+                ui.heading("Source Monitor");
+                if self.state.proxy_active {
+                    ui.colored_label(egui::Color32::from_rgb(255, 200, 0), "PROXY")
+                        .on_hover_text("Playing proxy — reload clip to hot-swap");
+                }
+            });
             ui.separator();
 
             let is_playing = self
@@ -522,16 +545,26 @@ impl eframe::App for AvioEditorApp {
                         }
                         self.state.player_thread = None;
                         self.state.pending_stop_rx = None;
+                        self.state.pending_proxy_rx = None;
                         let target = Duration::from_secs_f64(self.state.seek_pos_secs);
                         if let Some(path) = self.state.clips.get(idx).map(|c| c.path.clone()) {
-                            let (thread, stop_rx) = player::spawn_player(
+                            let proxy_dir = self
+                                .state
+                                .clips
+                                .get(idx)
+                                .and_then(|c| c.path.parent())
+                                .map(|p| p.join("proxies"));
+                            let (thread, stop_rx, proxy_rx) = player::spawn_player(
                                 path,
                                 Arc::clone(&self.state.frame_handle),
                                 ctx.clone(),
                                 Some(target),
+                                proxy_dir,
                             );
                             self.state.player_thread = Some(thread);
                             self.state.pending_stop_rx = Some(stop_rx);
+                            self.state.pending_proxy_rx = Some(proxy_rx);
+                            self.state.proxy_active = false;
                         }
                     }
                 });
@@ -545,11 +578,13 @@ impl eframe::App for AvioEditorApp {
                         && let Some(stop) = self.state.player_stop.take()
                     {
                         stop.store(true, std::sync::atomic::Ordering::Release);
+                        self.state.proxy_active = false;
                     }
                     if ui.button("⏹ Stop").clicked()
                         && let Some(stop) = self.state.player_stop.take()
                     {
                         stop.store(true, std::sync::atomic::Ordering::Release);
+                        self.state.proxy_active = false;
                     }
                 } else if let Some(idx) = self.state.monitor_clip_index {
                     let has_video = self
@@ -562,14 +597,23 @@ impl eframe::App for AvioEditorApp {
                         && ui.button("▶ Play").clicked()
                         && let Some(path) = self.state.clips.get(idx).map(|c| c.path.clone())
                     {
-                        let (thread, stop_rx) = player::spawn_player(
+                        let proxy_dir = self
+                            .state
+                            .clips
+                            .get(idx)
+                            .and_then(|c| c.path.parent())
+                            .map(|p| p.join("proxies"));
+                        let (thread, stop_rx, proxy_rx) = player::spawn_player(
                             path,
                             Arc::clone(&self.state.frame_handle),
                             ctx.clone(),
                             None,
+                            proxy_dir,
                         );
                         self.state.player_thread = Some(thread);
                         self.state.pending_stop_rx = Some(stop_rx);
+                        self.state.pending_proxy_rx = Some(proxy_rx);
+                        self.state.proxy_active = false;
                     } else if !has_video {
                         ui.label("No video stream");
                     }

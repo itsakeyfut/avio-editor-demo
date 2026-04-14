@@ -21,6 +21,8 @@ pub struct AppState {
     pub monitor_clip_index: Option<usize>,
     pub seek_pos_secs: f64,
     pub current_pts: Option<Duration>,
+    pub proxy_active: bool,
+    pub pending_proxy_rx: Option<mpsc::Receiver<bool>>,
 }
 
 impl Default for AppState {
@@ -45,6 +47,8 @@ impl Default for AppState {
             monitor_clip_index: None,
             seek_pos_secs: 0.0,
             current_pts: None,
+            proxy_active: false,
+            pending_proxy_rx: None,
         }
     }
 }
