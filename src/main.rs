@@ -1,3 +1,4 @@
+mod analysis;
 mod state;
 mod thumbnail;
 use state::{AppState, ImportedClip};
@@ -28,6 +29,11 @@ struct AvioEditorApp {
 impl eframe::App for AvioEditorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Drain completed thumbnail results each frame.
+        while let Ok((idx, scenes)) = self.state.scene_rx.try_recv() {
+            if let Some(clip) = self.state.clips.get_mut(idx) {
+                clip.scenes = scenes;
+            }
+        }
         while let Ok((path, w, h, rgb)) = self.state.thumbnail_rx.try_recv() {
             let image = egui::ColorImage::from_rgb([w as usize, h as usize], &rgb);
             let texture =
@@ -51,6 +57,50 @@ impl eframe::App for AvioEditorApp {
             .default_height(200.0)
             .show(ctx, |ui| {
                 ui.heading("Timeline");
+                ui.separator();
+
+                let pps = self.state.timeline.pixels_per_second;
+                let available_width = ui.available_width();
+                let (_, ruler_rect) = ui.allocate_space(egui::vec2(available_width, 24.0));
+                let painter = ui.painter_at(ruler_rect);
+
+                painter.rect_filled(ruler_rect, 0.0, egui::Color32::from_gray(40));
+
+                // Time tick marks every 5 s
+                let mut t = 0.0f32;
+                while t * pps < ruler_rect.width() {
+                    let x = ruler_rect.left() + t * pps;
+                    painter.vline(
+                        x,
+                        ruler_rect.y_range(),
+                        egui::Stroke::new(1.0, egui::Color32::GRAY),
+                    );
+                    painter.text(
+                        egui::pos2(x + 2.0, ruler_rect.top() + 2.0),
+                        egui::Align2::LEFT_TOP,
+                        format!("{t:.0}s"),
+                        egui::FontId::monospace(10.0),
+                        egui::Color32::GRAY,
+                    );
+                    t += 5.0;
+                }
+
+                // Orange scene-change markers for V1 clips
+                for tc in &self.state.timeline.tracks[0].clips {
+                    if let Some(source) = self.state.clips.get(tc.source_index) {
+                        for &scene_ts in &source.scenes {
+                            let track_ts = tc.start_on_track + scene_ts;
+                            let x = ruler_rect.left() + track_ts.as_secs_f32() * pps;
+                            if x >= ruler_rect.left() && x <= ruler_rect.right() {
+                                painter.vline(
+                                    x,
+                                    ruler_rect.y_range(),
+                                    egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 165, 0)),
+                                );
+                            }
+                        }
+                    }
+                }
             });
 
         // 3. Left: Clip Browser
@@ -78,7 +128,9 @@ impl eframe::App for AvioEditorApp {
                                     info,
                                     thumbnail: None,
                                     proxy_path: None,
+                                    scenes: Vec::new(),
                                 });
+                                let clip_idx = self.state.clips.len() - 1;
                                 if has_video {
                                     let tx = self.state.thumbnail_tx.clone();
                                     let path_for_task = path.clone();
@@ -88,6 +140,12 @@ impl eframe::App for AvioEditorApp {
                                         {
                                             let _ = tx.send((path_for_task, w, h, rgb));
                                         }
+                                    });
+                                    let scene_tx = self.state.scene_tx.clone();
+                                    let path_for_scene = path.clone();
+                                    tokio::task::spawn_blocking(move || {
+                                        let scenes = analysis::detect_scenes(&path_for_scene);
+                                        let _ = scene_tx.send((clip_idx, scenes));
                                     });
                                 }
                             }
@@ -188,6 +246,23 @@ impl eframe::App for AvioEditorApp {
                             ui.label(clip.duration_label());
                             ui.end_row();
                         });
+                    ui.separator();
+                    if ui.button("Add to V1").clicked() {
+                        let start = self.state.timeline.tracks[0]
+                            .clips
+                            .last()
+                            .map(|tc| {
+                                tc.start_on_track
+                                    + self.state.clips[tc.source_index].info.duration()
+                            })
+                            .unwrap_or_default();
+                        self.state.timeline.tracks[0]
+                            .clips
+                            .push(state::TimelineClip {
+                                source_index: idx,
+                                start_on_track: start,
+                            });
+                    }
                 }
             });
 
