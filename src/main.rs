@@ -1,13 +1,14 @@
 mod analysis;
 mod gif;
 mod player;
+mod proxy;
 mod state;
 mod thumbnail;
 mod trim;
 use std::sync::Arc;
 use std::time::Duration;
 
-use state::{AppState, GifStatus, ImportedClip, TrimStatus};
+use state::{AppState, GifStatus, ImportedClip, ProxyStatus, TrimStatus};
 
 fn snap_to_nearest_keyframe(
     target_secs: f64,
@@ -117,6 +118,29 @@ impl eframe::App for AvioEditorApp {
             });
         for path in gif_done {
             log::info!("GIF exported: {}", path.display());
+        }
+
+        // Drain completed proxy jobs each frame.
+        let mut proxy_done: Vec<(usize, std::path::PathBuf)> = Vec::new();
+        self.state.proxy_jobs.retain(|job| {
+            match job
+                .status
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+            {
+                ProxyStatus::Running => true,
+                ProxyStatus::Done(path) => {
+                    proxy_done.push((job.clip_index, path));
+                    false
+                }
+                ProxyStatus::Failed(_) => true, // kept to display error badge
+            }
+        });
+        for (clip_idx, path) in proxy_done {
+            if let Some(clip) = self.state.clips.get_mut(clip_idx) {
+                clip.proxy_path = Some(path);
+            }
         }
 
         // Receive stop handle from a freshly spawned player thread.
@@ -320,6 +344,31 @@ impl eframe::App for AvioEditorApp {
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(clip.duration_label());
+                            if clip.proxy_path.is_some() {
+                                ui.colored_label(egui::Color32::from_rgb(0, 200, 0), "Proxy");
+                            } else {
+                                let job_status = self
+                                    .state
+                                    .proxy_jobs
+                                    .iter()
+                                    .find(|j| j.clip_index == idx)
+                                    .map(|j| {
+                                        j.status
+                                            .lock()
+                                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                            .clone()
+                                    });
+                                match job_status {
+                                    Some(ProxyStatus::Running) => {
+                                        ui.spinner();
+                                    }
+                                    Some(ProxyStatus::Failed(ref msg)) => {
+                                        ui.colored_label(egui::Color32::RED, "Failed")
+                                            .on_hover_text(msg.as_str());
+                                    }
+                                    _ => {}
+                                }
+                            }
                         });
                     });
                 }
@@ -443,6 +492,35 @@ impl eframe::App for AvioEditorApp {
                             ui.end_row();
                         });
                     ui.separator();
+                    let is_proxy_running = self.state.proxy_jobs.iter().any(|j| {
+                        j.clip_index == idx
+                            && matches!(
+                                j.status
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                    .clone(),
+                                ProxyStatus::Running
+                            )
+                    });
+                    if ui
+                        .add_enabled(!is_proxy_running, egui::Button::new("Gen Proxy"))
+                        .clicked()
+                    {
+                        // Remove any stale job for this clip before starting a new one.
+                        self.state.proxy_jobs.retain(|j| j.clip_index != idx);
+                        if let Some(c) = self.state.clips.get(idx) {
+                            let proxy_dir = c
+                                .path
+                                .parent()
+                                .map(|p| p.join("proxies"))
+                                .unwrap_or_default();
+                            if let Err(e) = std::fs::create_dir_all(&proxy_dir) {
+                                log::warn!("failed to create proxy dir {proxy_dir:?}: {e}");
+                            }
+                            let handle = proxy::spawn_proxy_job(idx, c.path.clone(), proxy_dir);
+                            self.state.proxy_jobs.push(handle);
+                        }
+                    }
                     if ui.button("Add to V1").clicked() {
                         let start = self.state.timeline.tracks[0]
                             .clips
