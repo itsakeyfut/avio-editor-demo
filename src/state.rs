@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
@@ -24,6 +24,8 @@ pub struct AppState {
     pub current_pts: Option<Duration>,
     pub proxy_active: bool,
     pub pending_proxy_rx: Option<mpsc::Receiver<bool>>,
+    pub playback_rate: f64,
+    pub rate_handle: Arc<AtomicU64>,
 }
 
 impl Default for AppState {
@@ -51,6 +53,8 @@ impl Default for AppState {
             current_pts: None,
             proxy_active: false,
             pending_proxy_rx: None,
+            playback_rate: 1.0,
+            rate_handle: Arc::new(AtomicU64::new(1.0_f64.to_bits())),
         }
     }
 }
