@@ -98,7 +98,9 @@ impl eframe::App for AvioEditorApp {
 
                 ui.separator();
 
-                for clip in &self.state.clips {
+                let mut clicked_idx: Option<usize> = None;
+                for (idx, clip) in self.state.clips.iter().enumerate() {
+                    let selected = self.state.selected_clip_index == Some(idx);
                     ui.horizontal(|ui| {
                         match &clip.thumbnail {
                             Some(tex) => {
@@ -111,17 +113,81 @@ impl eframe::App for AvioEditorApp {
                                 ui.label("\u{1F3AC}");
                             }
                         }
-                        ui.label(
-                            clip.path
-                                .file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .as_ref(),
-                        );
+                        let name = clip.path.file_name().unwrap_or_default().to_string_lossy();
+                        if ui.selectable_label(selected, name.as_ref()).clicked() {
+                            clicked_idx = Some(idx);
+                        }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(clip.duration_label());
                         });
                     });
+                }
+                if let Some(idx) = clicked_idx {
+                    self.state.selected_clip_index = Some(idx);
+                }
+
+                if let Some(idx) = self.state.selected_clip_index
+                    && let Some(clip) = self.state.clips.get(idx)
+                {
+                    ui.separator();
+                    egui::Grid::new("meta_grid")
+                        .num_columns(2)
+                        .striped(true)
+                        .show(ui, |ui| {
+                            let info = &clip.info;
+
+                            ui.label("Container");
+                            ui.label(info.format());
+                            ui.end_row();
+
+                            if let Some(v) = info.primary_video() {
+                                ui.label("Video");
+                                ui.label(v.codec().display_name());
+                                ui.end_row();
+
+                                ui.label("Size");
+                                ui.label(format!("{}×{}", v.width(), v.height()));
+                                ui.end_row();
+
+                                ui.label("FPS");
+                                ui.label(format!("{:.3}", v.fps()));
+                                ui.end_row();
+
+                                if let Some(br) = v.bitrate() {
+                                    ui.label("V-bitrate");
+                                    ui.label(format!("{} kb/s", br / 1000));
+                                    ui.end_row();
+                                }
+
+                                ui.label("Color");
+                                ui.label(v.color_space().name());
+                                ui.end_row();
+                            }
+
+                            if let Some(a) = info.primary_audio() {
+                                ui.label("Audio");
+                                ui.label(a.codec().display_name());
+                                ui.end_row();
+
+                                ui.label("Rate");
+                                ui.label(format!("{} Hz", a.sample_rate()));
+                                ui.end_row();
+
+                                ui.label("Ch");
+                                ui.label(format!("{}", a.channels()));
+                                ui.end_row();
+
+                                if let Some(br) = a.bitrate() {
+                                    ui.label("A-bitrate");
+                                    ui.label(format!("{} kb/s", br / 1000));
+                                    ui.end_row();
+                                }
+                            }
+
+                            ui.label("Duration");
+                            ui.label(clip.duration_label());
+                            ui.end_row();
+                        });
                 }
             });
 
