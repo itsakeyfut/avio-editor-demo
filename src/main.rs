@@ -341,6 +341,7 @@ impl eframe::App for AvioEditorApp {
                             None,
                             proxy_dir,
                             Arc::clone(&self.state.rate_handle),
+                            self.state.av_offset_ms as i64,
                         );
                         self.state.player_thread = Some(thread);
                         self.state.pending_stop_rx = Some(stop_rx);
@@ -485,7 +486,7 @@ impl eframe::App for AvioEditorApp {
 
             // Two control rows when a clip is loaded: seek bar + timecode, then buttons.
             let ctrl_height = if self.state.monitor_clip_index.is_some() {
-                72.0
+                100.0
             } else {
                 36.0
             };
@@ -574,6 +575,7 @@ impl eframe::App for AvioEditorApp {
                                 Some(target),
                                 proxy_dir,
                                 Arc::clone(&self.state.rate_handle),
+                                self.state.av_offset_ms as i64,
                             );
                             self.state.player_thread = Some(thread);
                             self.state.pending_stop_rx = Some(stop_rx);
@@ -624,6 +626,7 @@ impl eframe::App for AvioEditorApp {
                             None,
                             proxy_dir,
                             Arc::clone(&self.state.rate_handle),
+                            self.state.av_offset_ms as i64,
                         );
                         self.state.player_thread = Some(thread);
                         self.state.pending_stop_rx = Some(stop_rx);
@@ -653,6 +656,89 @@ impl eframe::App for AvioEditorApp {
                     }
                 }
             });
+
+            // A/V offset row — visible whenever a clip is loaded.
+            // avio API gap: set_av_offset(&self) uses AtomicI64 (thread-safe)
+            // but there is no av_offset_handle() method analogous to
+            // stop_handle(). Without a handle the UI thread cannot write to
+            // the player while run() holds &mut self on the player thread.
+            // Workaround: stop + respawn at current position on drag release.
+            if let Some(idx) = self.state.monitor_clip_index {
+                ui.horizontal(|ui| {
+                    ui.label("A/V:");
+                    let av_resp = ui.add(
+                        egui::DragValue::new(&mut self.state.av_offset_ms)
+                            .range(-500..=500)
+                            .speed(1.0)
+                            .suffix(" ms"),
+                    );
+                    let should_apply =
+                        av_resp.drag_stopped() || (!av_resp.dragged() && av_resp.changed());
+                    if should_apply && is_playing {
+                        if let Some(stop) = self.state.player_stop.take() {
+                            stop.store(true, std::sync::atomic::Ordering::Release);
+                        }
+                        self.state.player_thread = None;
+                        self.state.pending_stop_rx = None;
+                        self.state.pending_proxy_rx = None;
+                        let target = Duration::from_secs_f64(self.state.seek_pos_secs);
+                        if let Some(path) = self.state.clips.get(idx).map(|c| c.path.clone()) {
+                            let proxy_dir = self
+                                .state
+                                .clips
+                                .get(idx)
+                                .and_then(|c| c.path.parent())
+                                .map(|p| p.join("proxies"));
+                            let (thread, stop_rx, proxy_rx) = player::spawn_player(
+                                path,
+                                Arc::clone(&self.state.frame_handle),
+                                ctx.clone(),
+                                Some(target),
+                                proxy_dir,
+                                Arc::clone(&self.state.rate_handle),
+                                self.state.av_offset_ms as i64,
+                            );
+                            self.state.player_thread = Some(thread);
+                            self.state.pending_stop_rx = Some(stop_rx);
+                            self.state.pending_proxy_rx = Some(proxy_rx);
+                            self.state.proxy_active = false;
+                        }
+                    }
+                    if ui.small_button("Reset").clicked() {
+                        self.state.av_offset_ms = 0;
+                        if is_playing {
+                            if let Some(stop) = self.state.player_stop.take() {
+                                stop.store(true, std::sync::atomic::Ordering::Release);
+                            }
+                            self.state.player_thread = None;
+                            self.state.pending_stop_rx = None;
+                            self.state.pending_proxy_rx = None;
+                            let target = Duration::from_secs_f64(self.state.seek_pos_secs);
+                            if let Some(path) = self.state.clips.get(idx).map(|c| c.path.clone()) {
+                                let proxy_dir = self
+                                    .state
+                                    .clips
+                                    .get(idx)
+                                    .and_then(|c| c.path.parent())
+                                    .map(|p| p.join("proxies"));
+                                let (thread, stop_rx, proxy_rx) = player::spawn_player(
+                                    path,
+                                    Arc::clone(&self.state.frame_handle),
+                                    ctx.clone(),
+                                    Some(target),
+                                    proxy_dir,
+                                    Arc::clone(&self.state.rate_handle),
+                                    0_i64,
+                                );
+                                self.state.player_thread = Some(thread);
+                                self.state.pending_stop_rx = Some(stop_rx);
+                                self.state.pending_proxy_rx = Some(proxy_rx);
+                                self.state.proxy_active = false;
+                            }
+                        }
+                    }
+                });
+            }
         });
     }
 }

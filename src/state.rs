@@ -26,6 +26,7 @@ pub struct AppState {
     pub pending_proxy_rx: Option<mpsc::Receiver<bool>>,
     pub playback_rate: f64,
     pub rate_handle: Arc<AtomicU64>,
+    pub av_offset_ms: i32,
 }
 
 impl Default for AppState {
@@ -55,6 +56,7 @@ impl Default for AppState {
             pending_proxy_rx: None,
             playback_rate: 1.0,
             rate_handle: Arc::new(AtomicU64::new(1.0_f64.to_bits())),
+            av_offset_ms: 0,
         }
     }
 }
