@@ -353,6 +353,7 @@ impl eframe::App for AvioEditorApp {
                                     .map(make_clip)
                                     .collect(),
                                 encoder_config: self.state.encoder_config.clone(),
+                                export_filters: self.state.export_filters.clone(),
                             };
                             self.state.export = Some(export::spawn_export(snapshot, output_path));
                         }
@@ -430,6 +431,47 @@ impl eframe::App for AvioEditorApp {
                             Ok(pf) => self.state.encoder_config = pf.to_draft(),
                             Err(e) => log::warn!("load preset failed: {e}"),
                         }
+                    }
+                });
+                // Filters section
+                egui::CollapsingHeader::new("Filters").show(ui, |ui| {
+                    ui.checkbox(&mut self.state.export_filters.scale_enabled, "Scale output");
+                    if self.state.export_filters.scale_enabled {
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::DragValue::new(&mut self.state.export_filters.output_width)
+                                    .prefix("W: ")
+                                    .suffix(" px"),
+                            );
+                            ui.add(
+                                egui::DragValue::new(&mut self.state.export_filters.output_height)
+                                    .prefix("H: ")
+                                    .suffix(" px"),
+                            );
+                        });
+                    }
+                    // avio API gap: color balance cannot be applied to Timeline::render().
+                    // See docs/issue13.md. UI is present for gap documentation purposes.
+                    ui.checkbox(
+                        &mut self.state.export_filters.colorbalance_enabled,
+                        "Color adjust (UI only — avio gap, not applied during render)",
+                    );
+                    if self.state.export_filters.colorbalance_enabled {
+                        ui.add(
+                            egui::Slider::new(
+                                &mut self.state.export_filters.brightness,
+                                -1.0..=1.0,
+                            )
+                            .text("Brightness"),
+                        );
+                        ui.add(
+                            egui::Slider::new(&mut self.state.export_filters.contrast, 0.0..=3.0)
+                                .text("Contrast"),
+                        );
+                        ui.add(
+                            egui::Slider::new(&mut self.state.export_filters.saturation, 0.0..=3.0)
+                                .text("Saturation"),
+                        );
                     }
                 });
                 // Export status row (shown while running or after completion)

@@ -39,6 +39,7 @@ pub struct AppState {
     pub av_offset_ms: i32,
     pub export: Option<ExportHandle>,
     pub encoder_config: EncoderConfigDraft,
+    pub export_filters: ExportFilterDraft,
 }
 
 impl Default for AppState {
@@ -85,6 +86,7 @@ impl Default for AppState {
             av_offset_ms: 0,
             export: None,
             encoder_config: EncoderConfigDraft::default(),
+            export_filters: ExportFilterDraft::default(),
         }
     }
 }
@@ -177,6 +179,32 @@ pub enum ExportStatus {
 
 pub struct ExportHandle {
     pub status: Arc<Mutex<ExportStatus>>,
+}
+
+/// UI-facing draft of output filter settings.
+#[derive(Clone)]
+pub struct ExportFilterDraft {
+    pub scale_enabled: bool,
+    pub output_width: u32,
+    pub output_height: u32,
+    pub colorbalance_enabled: bool,
+    pub brightness: f32, // −1.0..=1.0, neutral 0.0
+    pub contrast: f32,   //  0.0..=3.0, neutral 1.0
+    pub saturation: f32, //  0.0..=3.0, neutral 1.0
+}
+
+impl Default for ExportFilterDraft {
+    fn default() -> Self {
+        Self {
+            scale_enabled: false,
+            output_width: 1920,
+            output_height: 1080,
+            colorbalance_enabled: false,
+            brightness: 0.0,
+            contrast: 1.0,
+            saturation: 1.0,
+        }
+    }
 }
 
 /// UI-facing draft of encoder settings, editable in the Export panel.
