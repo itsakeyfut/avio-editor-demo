@@ -12,6 +12,51 @@ use std::time::Duration;
 
 use state::{AppState, GifStatus, ImportedClip, ProxyStatus, TrimStatus};
 
+// avio API gap: ExportPreset / EncoderConfig have no serde support, and
+// VideoCodec / AudioCodec have no serde derives. We serialize our own
+// EncoderConfigDraft as a plain JSON file. See docs/issue13.md.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PresetFile {
+    video_codec: String,
+    audio_codec: String,
+    crf: u32,
+}
+
+impl PresetFile {
+    fn from_draft(d: &state::EncoderConfigDraft) -> Self {
+        Self {
+            video_codec: d.video_codec.name().to_owned(),
+            audio_codec: d.audio_codec.name().to_owned(),
+            crf: d.crf,
+        }
+    }
+
+    fn to_draft(&self) -> state::EncoderConfigDraft {
+        state::EncoderConfigDraft {
+            video_codec: match self.video_codec.as_str() {
+                "h264" => avio::VideoCodec::H264,
+                "hevc" => avio::VideoCodec::H265,
+                "vp9" => avio::VideoCodec::Vp9,
+                "vp8" => avio::VideoCodec::Vp8,
+                "av1" => avio::VideoCodec::Av1,
+                "prores" => avio::VideoCodec::ProRes,
+                "dnxhd" => avio::VideoCodec::DnxHd,
+                _ => avio::VideoCodec::H264,
+            },
+            audio_codec: match self.audio_codec.as_str() {
+                "aac" => avio::AudioCodec::Aac,
+                "mp3" => avio::AudioCodec::Mp3,
+                "opus" => avio::AudioCodec::Opus,
+                "flac" => avio::AudioCodec::Flac,
+                "vorbis" => avio::AudioCodec::Vorbis,
+                "ac3" => avio::AudioCodec::Ac3,
+                _ => avio::AudioCodec::Aac,
+            },
+            crf: self.crf,
+        }
+    }
+}
+
 fn snap_to_nearest_keyframe(
     target_secs: f64,
     keyframes: &[std::time::Duration],
@@ -307,10 +352,85 @@ impl eframe::App for AvioEditorApp {
                                     .iter()
                                     .map(make_clip)
                                     .collect(),
+                                encoder_config: self.state.encoder_config.clone(),
                             };
                             self.state.export = Some(export::spawn_export(snapshot, output_path));
                         }
                     });
+                });
+                // Encoder settings row: codec selectors, CRF, Save/Load preset
+                ui.horizontal(|ui| {
+                    ui.label("Video:");
+                    egui::ComboBox::from_id_salt("vcod")
+                        .selected_text(self.state.encoder_config.video_codec.display_name())
+                        .show_ui(ui, |ui| {
+                            for codec in [
+                                avio::VideoCodec::H264,
+                                avio::VideoCodec::H265,
+                                avio::VideoCodec::Vp9,
+                                avio::VideoCodec::Av1,
+                                avio::VideoCodec::ProRes,
+                            ] {
+                                ui.selectable_value(
+                                    &mut self.state.encoder_config.video_codec,
+                                    codec,
+                                    codec.display_name(),
+                                );
+                            }
+                        });
+                    ui.label("Audio:");
+                    egui::ComboBox::from_id_salt("acod")
+                        .selected_text(self.state.encoder_config.audio_codec.display_name())
+                        .show_ui(ui, |ui| {
+                            for codec in [
+                                avio::AudioCodec::Aac,
+                                avio::AudioCodec::Mp3,
+                                avio::AudioCodec::Opus,
+                                avio::AudioCodec::Flac,
+                            ] {
+                                ui.selectable_value(
+                                    &mut self.state.encoder_config.audio_codec,
+                                    codec,
+                                    codec.display_name(),
+                                );
+                            }
+                        });
+                    ui.label("CRF:");
+                    ui.add(egui::Slider::new(
+                        &mut self.state.encoder_config.crf,
+                        0..=51,
+                    ));
+                    if ui.button("Save Preset…").clicked()
+                        && let Some(path) = rfd::FileDialog::new()
+                            .add_filter("Export Preset", &["json"])
+                            .set_file_name("preset.json")
+                            .save_file()
+                    {
+                        let pf = PresetFile::from_draft(&self.state.encoder_config);
+                        match std::fs::File::create(&path)
+                            .map_err(|e| e.to_string())
+                            .and_then(|f| {
+                                serde_json::to_writer_pretty(f, &pf).map_err(|e| e.to_string())
+                            }) {
+                            Ok(()) => {}
+                            Err(e) => log::warn!("save preset failed: {e}"),
+                        }
+                    }
+                    if ui.button("Load Preset…").clicked()
+                        && let Some(path) = rfd::FileDialog::new()
+                            .add_filter("Export Preset", &["json"])
+                            .pick_file()
+                    {
+                        match std::fs::File::open(&path)
+                            .map_err(|e| e.to_string())
+                            .and_then(|f| {
+                                serde_json::from_reader::<_, PresetFile>(f)
+                                    .map_err(|e| e.to_string())
+                            }) {
+                            Ok(pf) => self.state.encoder_config = pf.to_draft(),
+                            Err(e) => log::warn!("load preset failed: {e}"),
+                        }
+                    }
                 });
                 // Export status row (shown while running or after completion)
                 if let Some(handle) = &self.state.export {
