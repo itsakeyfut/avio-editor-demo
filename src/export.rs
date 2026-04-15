@@ -20,6 +20,11 @@ pub struct ExportSnapshot {
     pub a1_clips: Vec<ExportClip>,
     pub encoder_config: crate::state::EncoderConfigDraft,
     pub export_filters: crate::state::ExportFilterDraft,
+    #[allow(dead_code)]
+    // stored for UI state; not applied (avio API gap — no audio_filter on TimelineBuilder)
+    pub loudness_normalize: bool,
+    #[allow(dead_code)]
+    pub loudness_target: f64,
 }
 
 /// Spawns a background task that builds an `avio::Timeline` from the snapshot
@@ -84,6 +89,11 @@ fn build_and_render(snapshot: ExportSnapshot, output: &std::path::Path) -> Resul
     // FilterGraphBuilder::eq(brightness, contrast, saturation) exists in ff-filter
     // but cannot be attached to Timeline::render() — see docs/issue13.md.
     // Color balance settings are stored but not applied during render.
+
+    // avio API gap: TimelineBuilder has no audio_filter() method.
+    // FilterGraphBuilder::loudness_normalize() exists in ff-filter but
+    // cannot be attached to Timeline — same gap as color balance (docs/issue13.md).
+    // loudness_normalize is stored but not applied during render.
 
     // V2: second video_track() call composites over V1 as an overlay layer.
     if !v2.is_empty() {

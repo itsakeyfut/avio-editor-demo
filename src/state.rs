@@ -40,6 +40,11 @@ pub struct AppState {
     pub export: Option<ExportHandle>,
     pub encoder_config: EncoderConfigDraft,
     pub export_filters: ExportFilterDraft,
+    pub loudness_result: Option<LoudnessResult>,
+    pub loudness_normalize: bool,
+    pub loudness_target: f64,
+    pub loudness_tx: mpsc::SyncSender<Option<LoudnessResult>>,
+    pub loudness_rx: mpsc::Receiver<Option<LoudnessResult>>,
 }
 
 impl Default for AppState {
@@ -50,6 +55,7 @@ impl Default for AppState {
         let (silence_tx, silence_rx) = mpsc::sync_channel(32);
         let (waveform_tx, waveform_rx) = mpsc::sync_channel(32);
         let (sprite_tx, sprite_rx) = mpsc::sync_channel(4);
+        let (loudness_tx, loudness_rx) = mpsc::sync_channel(4);
         Self {
             clips: Vec::new(),
             selected_clip_index: None,
@@ -87,6 +93,11 @@ impl Default for AppState {
             export: None,
             encoder_config: EncoderConfigDraft::default(),
             export_filters: ExportFilterDraft::default(),
+            loudness_result: None,
+            loudness_normalize: false,
+            loudness_target: -23.0,
+            loudness_tx,
+            loudness_rx,
         }
     }
 }
@@ -179,6 +190,14 @@ pub enum ExportStatus {
 
 pub struct ExportHandle {
     pub status: Arc<Mutex<ExportStatus>>,
+}
+
+/// EBU R128 loudness measurement result.
+#[derive(Clone)]
+pub struct LoudnessResult {
+    pub integrated_lufs: f32,
+    pub true_peak_dbtp: f32,
+    pub lra: f32,
 }
 
 /// UI-facing draft of output filter settings.

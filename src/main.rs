@@ -300,6 +300,11 @@ impl eframe::App for AvioEditorApp {
             self.state.keyframes = kfs;
         }
 
+        // Drain loudness measurement results.
+        while let Ok(result) = self.state.loudness_rx.try_recv() {
+            self.state.loudness_result = result;
+        }
+
         // 1. Top menu bar (must come before all other panels)
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
@@ -354,6 +359,8 @@ impl eframe::App for AvioEditorApp {
                                     .collect(),
                                 encoder_config: self.state.encoder_config.clone(),
                                 export_filters: self.state.export_filters.clone(),
+                                loudness_normalize: self.state.loudness_normalize,
+                                loudness_target: self.state.loudness_target,
                             };
                             self.state.export = Some(export::spawn_export(snapshot, output_path));
                         }
@@ -473,6 +480,47 @@ impl eframe::App for AvioEditorApp {
                                 .text("Saturation"),
                         );
                     }
+                });
+                // Loudness measurement
+                ui.horizontal(|ui| {
+                    let can_measure = !self.state.timeline.tracks[2].clips.is_empty();
+                    if ui
+                        .add_enabled(can_measure, egui::Button::new("Measure Loudness"))
+                        .clicked()
+                        && let Some(tc) = self.state.timeline.tracks[2].clips.first()
+                    {
+                        let path = self.state.clips[tc.source_index].path.clone();
+                        let tx = self.state.loudness_tx.clone();
+                        tokio::task::spawn_blocking(move || {
+                            let result = avio::LoudnessMeter::new(&path).measure().ok().map(|r| {
+                                state::LoudnessResult {
+                                    integrated_lufs: r.integrated_lufs,
+                                    true_peak_dbtp: r.true_peak_dbtp,
+                                    lra: r.lra,
+                                }
+                            });
+                            let _ = tx.send(result);
+                        });
+                    }
+                    if let Some(ref r) = self.state.loudness_result {
+                        ui.label(format!(
+                            "I: {:.1} LUFS  TP: {:.1} dBTP  LRA: {:.1} LU",
+                            r.integrated_lufs, r.true_peak_dbtp, r.lra,
+                        ));
+                    }
+                });
+                // avio API gap: audio_filter() not available on TimelineBuilder (docs/issue13.md).
+                ui.horizontal(|ui| {
+                    ui.checkbox(
+                        &mut self.state.loudness_normalize,
+                        "Normalize to (UI only — avio gap, not applied during render)",
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut self.state.loudness_target)
+                            .range(-40.0..=-5.0)
+                            .speed(0.5)
+                            .suffix(" LUFS"),
+                    );
                 });
                 // Export status row (shown while running or after completion)
                 if let Some(handle) = &self.state.export {
