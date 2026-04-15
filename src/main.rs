@@ -285,17 +285,30 @@ impl eframe::App for AvioEditorApp {
                                 .set_file_name("export.mp4")
                                 .save_file()
                         {
-                            let clips: Vec<export::ClipSnapshot> = self.state.timeline.tracks[0]
-                                .clips
-                                .iter()
-                                .map(|tc| export::ClipSnapshot {
-                                    path: self.state.clips[tc.source_index].path.clone(),
-                                    start_on_track: tc.start_on_track,
-                                    in_point: tc.in_point,
-                                    out_point: tc.out_point,
-                                })
-                                .collect();
-                            self.state.export = Some(export::spawn_export(clips, output_path));
+                            let make_clip = |tc: &state::TimelineClip| export::ExportClip {
+                                path: self.state.clips[tc.source_index].path.clone(),
+                                start_on_track: tc.start_on_track,
+                                in_point: tc.in_point,
+                                out_point: tc.out_point,
+                            };
+                            let snapshot = export::ExportSnapshot {
+                                v1_clips: self.state.timeline.tracks[0]
+                                    .clips
+                                    .iter()
+                                    .map(make_clip)
+                                    .collect(),
+                                v2_clips: self.state.timeline.tracks[1]
+                                    .clips
+                                    .iter()
+                                    .map(make_clip)
+                                    .collect(),
+                                a1_clips: self.state.timeline.tracks[2]
+                                    .clips
+                                    .iter()
+                                    .map(make_clip)
+                                    .collect(),
+                            };
+                            self.state.export = Some(export::spawn_export(snapshot, output_path));
                         }
                     });
                 });
