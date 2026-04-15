@@ -1,4 +1,5 @@
 mod analysis;
+mod export;
 mod gif;
 mod player;
 mod proxy;
@@ -267,7 +268,71 @@ impl eframe::App for AvioEditorApp {
             .resizable(true)
             .default_height(200.0)
             .show(ctx, |ui| {
-                ui.heading("Timeline");
+                // Header: "Timeline" heading + Export button aligned right
+                let mut clear_export = false;
+                ui.horizontal(|ui| {
+                    ui.heading("Timeline");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let v1_empty = self.state.timeline.tracks[0].clips.is_empty();
+                        let is_running = self.state.export.as_ref().is_some_and(|h| {
+                            matches!(*h.status.lock().unwrap(), state::ExportStatus::Running)
+                        });
+                        if ui
+                            .add_enabled(!v1_empty && !is_running, egui::Button::new("Export"))
+                            .clicked()
+                            && let Some(output_path) = rfd::FileDialog::new()
+                                .add_filter("MP4", &["mp4"])
+                                .set_file_name("export.mp4")
+                                .save_file()
+                        {
+                            let clips: Vec<export::ClipSnapshot> = self.state.timeline.tracks[0]
+                                .clips
+                                .iter()
+                                .map(|tc| export::ClipSnapshot {
+                                    path: self.state.clips[tc.source_index].path.clone(),
+                                    start_on_track: tc.start_on_track,
+                                    in_point: tc.in_point,
+                                    out_point: tc.out_point,
+                                })
+                                .collect();
+                            self.state.export = Some(export::spawn_export(clips, output_path));
+                        }
+                    });
+                });
+                // Export status row (shown while running or after completion)
+                if let Some(handle) = &self.state.export {
+                    let status = handle.status.lock().unwrap().clone();
+                    match status {
+                        state::ExportStatus::Running => {
+                            ui.add(egui::ProgressBar::new(0.0).animate(true).text("Exporting…"));
+                        }
+                        state::ExportStatus::Done(path) => {
+                            ui.horizontal(|ui| {
+                                ui.colored_label(
+                                    egui::Color32::GREEN,
+                                    format!("Exported: {}", path.display()),
+                                );
+                                if ui.button("Clear").clicked() {
+                                    clear_export = true;
+                                }
+                            });
+                        }
+                        state::ExportStatus::Failed(msg) => {
+                            ui.horizontal(|ui| {
+                                ui.colored_label(
+                                    egui::Color32::RED,
+                                    format!("Export failed: {msg}"),
+                                );
+                                if ui.button("Dismiss").clicked() {
+                                    clear_export = true;
+                                }
+                            });
+                        }
+                    }
+                }
+                if clear_export {
+                    self.state.export = None;
+                }
                 ui.separator();
 
                 const TRACK_HEIGHT: f32 = 40.0;
