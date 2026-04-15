@@ -19,6 +19,7 @@ pub struct ExportSnapshot {
     pub v2_clips: Vec<ExportClip>,
     pub a1_clips: Vec<ExportClip>,
     pub encoder_config: crate::state::EncoderConfigDraft,
+    pub export_filters: crate::state::ExportFilterDraft,
 }
 
 /// Spawns a background task that builds an `avio::Timeline` from the snapshot
@@ -70,6 +71,19 @@ fn build_and_render(snapshot: ExportSnapshot, output: &std::path::Path) -> Resul
     // Progress percentage is therefore unavailable; the UI shows an indeterminate bar.
     let config = snapshot.encoder_config.to_encoder_config();
     let mut builder = avio::Timeline::builder().video_track(v1);
+
+    // Apply output scale via TimelineBuilder::canvas() when enabled.
+    if snapshot.export_filters.scale_enabled {
+        builder = builder.canvas(
+            snapshot.export_filters.output_width,
+            snapshot.export_filters.output_height,
+        );
+    }
+
+    // avio API gap: TimelineBuilder has no video_filter() or post-processing hook.
+    // FilterGraphBuilder::eq(brightness, contrast, saturation) exists in ff-filter
+    // but cannot be attached to Timeline::render() — see docs/issue13.md.
+    // Color balance settings are stored but not applied during render.
 
     // V2: second video_track() call composites over V1 as an overlay layer.
     if !v2.is_empty() {
