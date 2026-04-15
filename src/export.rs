@@ -18,6 +18,7 @@ pub struct ExportSnapshot {
     pub v1_clips: Vec<ExportClip>,
     pub v2_clips: Vec<ExportClip>,
     pub a1_clips: Vec<ExportClip>,
+    pub encoder_config: crate::state::EncoderConfigDraft,
 }
 
 /// Spawns a background task that builds an `avio::Timeline` from the snapshot
@@ -67,7 +68,7 @@ fn build_and_render(snapshot: ExportSnapshot, output: &std::path::Path) -> Resul
     // The real Progress/ProgressCallback types exist in ff-pipeline but are
     // wired only into Pipeline (single-file transcode), not Timeline.
     // Progress percentage is therefore unavailable; the UI shows an indeterminate bar.
-    let config = avio::EncoderConfig::builder().build();
+    let config = snapshot.encoder_config.to_encoder_config();
     let mut builder = avio::Timeline::builder().video_track(v1);
 
     // V2: second video_track() call composites over V1 as an overlay layer.

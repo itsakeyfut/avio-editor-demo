@@ -38,6 +38,7 @@ pub struct AppState {
     pub rate_handle: Arc<AtomicU64>,
     pub av_offset_ms: i32,
     pub export: Option<ExportHandle>,
+    pub encoder_config: EncoderConfigDraft,
 }
 
 impl Default for AppState {
@@ -83,6 +84,7 @@ impl Default for AppState {
             rate_handle: Arc::new(AtomicU64::new(1.0_f64.to_bits())),
             av_offset_ms: 0,
             export: None,
+            encoder_config: EncoderConfigDraft::default(),
         }
     }
 }
@@ -175,6 +177,35 @@ pub enum ExportStatus {
 
 pub struct ExportHandle {
     pub status: Arc<Mutex<ExportStatus>>,
+}
+
+/// UI-facing draft of encoder settings, editable in the Export panel.
+#[derive(Clone)]
+pub struct EncoderConfigDraft {
+    pub video_codec: avio::VideoCodec,
+    pub audio_codec: avio::AudioCodec,
+    pub crf: u32,
+}
+
+impl Default for EncoderConfigDraft {
+    fn default() -> Self {
+        Self {
+            video_codec: avio::VideoCodec::H264,
+            audio_codec: avio::AudioCodec::Aac,
+            crf: 23,
+        }
+    }
+}
+
+impl EncoderConfigDraft {
+    /// Converts the draft into an `avio::EncoderConfig` for use in `Timeline::render()`.
+    pub fn to_encoder_config(&self) -> avio::EncoderConfig {
+        avio::EncoderConfig::builder()
+            .video_codec(self.video_codec)
+            .audio_codec(self.audio_codec)
+            .crf(self.crf)
+            .build()
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
