@@ -295,6 +295,12 @@ impl eframe::App for AvioEditorApp {
                 let content_width = (max_end_secs * pps + 200.0).max(1200.0);
 
                 let mut pending_clips: Vec<(usize, usize, f32)> = Vec::new();
+                let mut pending_transitions: Vec<(
+                    usize,
+                    usize,
+                    Option<avio::XfadeTransition>,
+                    Duration,
+                )> = Vec::new();
 
                 egui::ScrollArea::horizontal()
                     .id_salt("timeline_scroll")
@@ -390,7 +396,7 @@ impl eframe::App for AvioEditorApp {
                                         egui::Color32::from_rgb(70, 150, 120) // teal
                                     }
                                 };
-                                for tc in &track.clips {
+                                for (clip_i, tc) in track.clips.iter().enumerate() {
                                     if let Some(source) = self.state.clips.get(tc.source_index) {
                                         let eff_dur = match (tc.in_point, tc.out_point) {
                                             (Some(i), Some(o)) if o > i => o - i,
@@ -472,9 +478,9 @@ impl eframe::App for AvioEditorApp {
                                                     }
                                                 }
                                             }
-                                            // Sprite frame tooltip on hover
+                                            // Sprite frame tooltip on hover + context menu on right-click
                                             let clip_resp =
-                                                ui.allocate_rect(cr, egui::Sense::hover());
+                                                ui.allocate_rect(cr, egui::Sense::click());
                                             if clip_resp.hovered()
                                                 && let Some(ss) = &source.sprite_sheet
                                                 && let Some(ptr) =
@@ -501,6 +507,85 @@ impl eframe::App for AvioEditorApp {
                                                         )
                                                         .uv(uv),
                                                     );
+                                                });
+                                            }
+                                            // Visual indicator — orange stripe when transition set
+                                            if tc.transition.is_some() {
+                                                let indicator = egui::Rect::from_min_size(
+                                                    cr.min,
+                                                    egui::vec2(4.0, cr.height()),
+                                                )
+                                                .intersect(cr);
+                                                ui.painter().rect_filled(
+                                                    indicator,
+                                                    0.0,
+                                                    egui::Color32::from_rgb(255, 165, 0),
+                                                );
+                                            }
+                                            // Context menu on right-click — V1 clips only
+                                            if track.kind == state::TrackKind::Video1 {
+                                                let current_transition = tc.transition;
+                                                let mut new_duration_ms =
+                                                    tc.transition_duration.as_millis() as f64;
+                                                clip_resp.context_menu(|ui| {
+                                                    ui.label("Transition to previous clip:");
+                                                    for &variant in &[
+                                                        avio::XfadeTransition::Fade,
+                                                        avio::XfadeTransition::Dissolve,
+                                                        avio::XfadeTransition::WipeLeft,
+                                                        avio::XfadeTransition::WipeRight,
+                                                        avio::XfadeTransition::SlideDown,
+                                                    ] {
+                                                        if ui
+                                                            .selectable_label(
+                                                                current_transition == Some(variant),
+                                                                variant.as_str(),
+                                                            )
+                                                            .clicked()
+                                                        {
+                                                            pending_transitions.push((
+                                                                track_idx,
+                                                                clip_i,
+                                                                Some(variant),
+                                                                Duration::from_millis(
+                                                                    new_duration_ms as u64,
+                                                                ),
+                                                            ));
+                                                            ui.close();
+                                                        }
+                                                    }
+                                                    ui.separator();
+                                                    if ui.button("Hard cut (remove)").clicked() {
+                                                        pending_transitions.push((
+                                                            track_idx,
+                                                            clip_i,
+                                                            None,
+                                                            Duration::from_millis(500),
+                                                        ));
+                                                        ui.close();
+                                                    }
+                                                    ui.separator();
+                                                    ui.label("Duration:");
+                                                    if ui
+                                                        .add(
+                                                            egui::DragValue::new(
+                                                                &mut new_duration_ms,
+                                                            )
+                                                            .range(100.0..=5000.0)
+                                                            .speed(10.0)
+                                                            .suffix(" ms"),
+                                                        )
+                                                        .changed()
+                                                    {
+                                                        pending_transitions.push((
+                                                            track_idx,
+                                                            clip_i,
+                                                            current_transition,
+                                                            Duration::from_millis(
+                                                                new_duration_ms as u64,
+                                                            ),
+                                                        ));
+                                                    }
                                                 });
                                             }
                                         }
@@ -538,7 +623,16 @@ impl eframe::App for AvioEditorApp {
                             start_on_track: Duration::from_secs_f32(start_secs),
                             in_point: in_pt,
                             out_point: out_pt,
+                            transition: None,
+                            transition_duration: Duration::from_millis(500),
                         });
+                }
+                for (track_idx, clip_i, transition, duration) in pending_transitions {
+                    if let Some(clip) = self.state.timeline.tracks[track_idx].clips.get_mut(clip_i)
+                    {
+                        clip.transition = transition;
+                        clip.transition_duration = duration;
+                    }
                 }
             });
 
@@ -862,6 +956,8 @@ impl eframe::App for AvioEditorApp {
                                 start_on_track: start,
                                 in_point: tc_in,
                                 out_point: tc_out,
+                                transition: None,
+                                transition_duration: Duration::from_millis(500),
                             });
                     }
                     let can_trim = clip.in_point.is_some() && clip.out_point.is_some();

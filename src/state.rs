@@ -182,6 +182,13 @@ pub struct TimelineClip {
     pub start_on_track: Duration,
     pub in_point: Option<Duration>,
     pub out_point: Option<Duration>,
+    /// Transition applied at the start of this clip (between the previous clip and this one).
+    /// `None` means a hard cut.
+    /// avio API gap: `ff_pipeline::Clip` has no transition field and `TimelineBuilder` has no
+    /// transition API, so this is stored as metadata only until avio adds export support.
+    pub transition: Option<avio::XfadeTransition>,
+    /// Duration of the transition. Default: 500 ms.
+    pub transition_duration: Duration,
 }
 
 pub struct TimelineState {
