@@ -16,6 +16,8 @@ pub struct AppState {
     pub silence_rx: mpsc::Receiver<(usize, Vec<(Duration, Duration)>)>,
     pub waveform_tx: mpsc::SyncSender<(usize, Vec<f32>)>,
     pub waveform_rx: mpsc::Receiver<(usize, Vec<f32>)>,
+    pub sprite_tx: mpsc::SyncSender<(usize, u32, u32, Vec<u8>)>,
+    pub sprite_rx: mpsc::Receiver<(usize, u32, u32, Vec<u8>)>,
     pub timeline: TimelineState,
     pub trim_jobs: Vec<TrimJobHandle>,
     pub gif_jobs: Vec<GifJobHandle>,
@@ -44,6 +46,7 @@ impl Default for AppState {
         let (keyframe_tx, keyframe_rx) = mpsc::sync_channel(4);
         let (silence_tx, silence_rx) = mpsc::sync_channel(32);
         let (waveform_tx, waveform_rx) = mpsc::sync_channel(32);
+        let (sprite_tx, sprite_rx) = mpsc::sync_channel(4);
         Self {
             clips: Vec::new(),
             selected_clip_index: None,
@@ -57,6 +60,8 @@ impl Default for AppState {
             silence_rx,
             waveform_tx,
             waveform_rx,
+            sprite_tx,
+            sprite_rx,
             timeline: TimelineState::default(),
             trim_jobs: Vec::new(),
             gif_jobs: Vec::new(),
@@ -80,6 +85,32 @@ impl Default for AppState {
     }
 }
 
+pub struct SpriteSheetData {
+    pub texture: egui::TextureHandle,
+    pub columns: usize,
+    pub rows: usize,
+    pub frame_count: usize,
+    pub clip_duration: std::time::Duration,
+}
+
+impl SpriteSheetData {
+    /// Returns the UV rect selecting the sprite frame at the given timestamp.
+    pub fn sprite_uv(&self, at: std::time::Duration) -> egui::Rect {
+        let dur = self.clip_duration.as_secs_f64();
+        let frame_idx = if dur > 0.0 {
+            ((at.as_secs_f64() / dur) * self.frame_count as f64) as usize
+        } else {
+            0
+        };
+        let frame_idx = frame_idx.min(self.frame_count - 1);
+        let col = frame_idx % self.columns;
+        let row = frame_idx / self.columns;
+        let w = 1.0 / self.columns as f32;
+        let h = 1.0 / self.rows as f32;
+        egui::Rect::from_min_size(egui::pos2(col as f32 * w, row as f32 * h), egui::vec2(w, h))
+    }
+}
+
 #[allow(dead_code)]
 pub struct ImportedClip {
     pub path: PathBuf,
@@ -89,6 +120,7 @@ pub struct ImportedClip {
     pub scenes: Vec<Duration>,
     pub silence_regions: Vec<(Duration, Duration)>,
     pub waveform: Vec<f32>,
+    pub sprite_sheet: Option<SpriteSheetData>,
     pub in_point: Option<Duration>,
     pub out_point: Option<Duration>,
 }

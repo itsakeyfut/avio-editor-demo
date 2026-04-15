@@ -2,6 +2,7 @@ mod analysis;
 mod gif;
 mod player;
 mod proxy;
+mod sprite;
 mod state;
 mod thumbnail;
 mod trim;
@@ -81,6 +82,7 @@ impl eframe::App for AvioEditorApp {
                         scenes: Vec::new(),
                         silence_regions: Vec::new(),
                         waveform: Vec::new(),
+                        sprite_sheet: None,
                         in_point: None,
                         out_point: None,
                     });
@@ -97,6 +99,15 @@ impl eframe::App for AvioEditorApp {
                         tokio::task::spawn_blocking(move || {
                             let scenes = analysis::detect_scenes(&path_for_scene);
                             let _ = scene_tx.send((clip_idx, scenes));
+                        });
+                        let sprite_tx = self.state.sprite_tx.clone();
+                        let path_for_sprite = path.clone();
+                        tokio::task::spawn_blocking(move || {
+                            if let Some((w, h, rgba)) =
+                                sprite::generate_sprite_sheet(&path_for_sprite, 10, 5)
+                            {
+                                let _ = sprite_tx.send((clip_idx, w, h, rgba));
+                            }
                         });
                     }
                     let silence_tx = self.state.silence_tx.clone();
@@ -212,6 +223,21 @@ impl eframe::App for AvioEditorApp {
         while let Ok((idx, waveform)) = self.state.waveform_rx.try_recv() {
             if let Some(clip) = self.state.clips.get_mut(idx) {
                 clip.waveform = waveform;
+            }
+        }
+        while let Ok((idx, w, h, rgba)) = self.state.sprite_rx.try_recv() {
+            let image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
+            let texture =
+                ctx.load_texture(format!("sprite_{idx}"), image, egui::TextureOptions::LINEAR);
+            if let Some(clip) = self.state.clips.get_mut(idx) {
+                let dur = clip.info.duration();
+                clip.sprite_sheet = Some(state::SpriteSheetData {
+                    texture,
+                    columns: 10,
+                    rows: 5,
+                    frame_count: 50,
+                    clip_duration: dur,
+                });
             }
         }
         while let Ok((path, w, h, rgb)) = self.state.thumbnail_rx.try_recv() {
@@ -446,6 +472,37 @@ impl eframe::App for AvioEditorApp {
                                                     }
                                                 }
                                             }
+                                            // Sprite frame tooltip on hover
+                                            let clip_resp =
+                                                ui.allocate_rect(cr, egui::Sense::hover());
+                                            if clip_resp.hovered()
+                                                && let Some(ss) = &source.sprite_sheet
+                                                && let Some(ptr) =
+                                                    ui.input(|i| i.pointer.latest_pos())
+                                            {
+                                                let offset_secs =
+                                                    ((ptr.x - cr.left()) / pps).max(0.0) as f64;
+                                                let hover_ts = Duration::from_secs_f64(offset_secs);
+                                                let uv = ss.sprite_uv(hover_ts);
+                                                egui::Tooltip::always_open(
+                                                    ui.ctx().clone(),
+                                                    ui.layer_id(),
+                                                    egui::Id::new("sprite_tip"),
+                                                    egui::PopupAnchor::Pointer,
+                                                )
+                                                .gap(12.0)
+                                                .show(|ui| {
+                                                    ui.add(
+                                                        egui::Image::new(
+                                                            egui::load::SizedTexture::new(
+                                                                ss.texture.id(),
+                                                                egui::vec2(160.0, 90.0),
+                                                            ),
+                                                        )
+                                                        .uv(uv),
+                                                    );
+                                                });
+                                            }
                                         }
                                     }
                                 }
@@ -513,6 +570,7 @@ impl eframe::App for AvioEditorApp {
                                     scenes: Vec::new(),
                                     silence_regions: Vec::new(),
                                     waveform: Vec::new(),
+                                    sprite_sheet: None,
                                     in_point: None,
                                     out_point: None,
                                 });
@@ -532,6 +590,15 @@ impl eframe::App for AvioEditorApp {
                                     tokio::task::spawn_blocking(move || {
                                         let scenes = analysis::detect_scenes(&path_for_scene);
                                         let _ = scene_tx.send((clip_idx, scenes));
+                                    });
+                                    let sprite_tx = self.state.sprite_tx.clone();
+                                    let path_for_sprite = path.clone();
+                                    tokio::task::spawn_blocking(move || {
+                                        if let Some((w, h, rgba)) =
+                                            sprite::generate_sprite_sheet(&path_for_sprite, 10, 5)
+                                        {
+                                            let _ = sprite_tx.send((clip_idx, w, h, rgba));
+                                        }
                                     });
                                 }
                                 let silence_tx = self.state.silence_tx.clone();
