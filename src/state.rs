@@ -37,6 +37,7 @@ pub struct AppState {
     pub playback_rate: f64,
     pub rate_handle: Arc<AtomicU64>,
     pub av_offset_ms: i32,
+    pub export: Option<ExportHandle>,
 }
 
 impl Default for AppState {
@@ -81,6 +82,7 @@ impl Default for AppState {
             playback_rate: 1.0,
             rate_handle: Arc::new(AtomicU64::new(1.0_f64.to_bits())),
             av_offset_ms: 0,
+            export: None,
         }
     }
 }
@@ -162,6 +164,17 @@ pub enum ProxyStatus {
 pub struct ProxyJobHandle {
     pub clip_index: usize,
     pub status: Arc<Mutex<ProxyStatus>>,
+}
+
+#[derive(Clone, PartialEq)]
+pub enum ExportStatus {
+    Running,
+    Done(PathBuf),
+    Failed(String),
+}
+
+pub struct ExportHandle {
+    pub status: Arc<Mutex<ExportStatus>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
