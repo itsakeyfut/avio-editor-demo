@@ -149,19 +149,22 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
     }
     if let Some(idx) = dbl_clicked_idx {
         state.selected_clip_index = Some(idx);
-        // Stop any current player.
+        // Stop any current player and clear all player state.
         if let Some(stop) = state.player_stop.take() {
             stop.store(true, std::sync::atomic::Ordering::Release);
         }
         state.player_thread = None;
         state.pending_stop_rx = None;
+        state.pending_proxy_rx = None;
+        state.pending_pause_rx = None;
+        state.pending_av_offset_rx = None;
+        state.player_pause = None;
+        state.player_av_offset = None;
         state.monitor_clip_index = Some(idx);
 
         // Only launch a player if the clip has a video stream.
-        // PreviewPlayer::open() fails for audio-only files because
-        // DecodeBuffer requires a video stream — avio API gap: a
-        // dedicated AudioPlayer (or an audio-only path in
-        // PreviewPlayer) would be needed.
+        // Audio-only files are supported by PreviewPlayer in avio 0.13.1 but we
+        // have no audio output (cpal not wired), so we skip playback for them.
         let has_video = state
             .clips
             .get(idx)
@@ -181,7 +184,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
                 .get(idx)
                 .and_then(|c| c.path.parent())
                 .map(|p| p.join("proxies"));
-            let (thread, stop_rx, proxy_rx) = player::spawn_player(
+            let (thread, stop_rx, proxy_rx, pause_rx, av_offset_rx) = player::spawn_player(
                 path,
                 Arc::clone(&state.frame_handle),
                 ctx.clone(),
@@ -193,6 +196,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
             state.player_thread = Some(thread);
             state.pending_stop_rx = Some(stop_rx);
             state.pending_proxy_rx = Some(proxy_rx);
+            state.pending_pause_rx = Some(pause_rx);
+            state.pending_av_offset_rx = Some(av_offset_rx);
             state.proxy_active = false;
         }
     }

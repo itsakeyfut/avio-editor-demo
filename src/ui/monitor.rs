@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use crate::{player, state};
@@ -13,13 +14,17 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
     });
     ui.separator();
 
-    let is_playing = state
+    let is_active = state
         .player_thread
         .as_ref()
         .map(|h| !h.is_finished())
         .unwrap_or(false);
+    let is_paused = state
+        .player_pause
+        .as_ref()
+        .map(|h| h.load(Ordering::Relaxed))
+        .unwrap_or(false);
 
-    // Two control rows when a clip is loaded: seek bar + timecode, then buttons.
     let ctrl_height = if state.monitor_clip_index.is_some() {
         128.0
     } else {
@@ -29,7 +34,6 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
     let video_size = egui::vec2(available.x, (available.y - ctrl_height).max(0.0));
 
     if state.monitor_clip_index.is_some() {
-        // Playback mode: show video frame (or "Loading…" while the first frame arrives).
         if let Some(tex) = &state.preview_texture {
             ui.image(egui::load::SizedTexture::new(tex.id(), video_size));
         } else {
@@ -42,7 +46,6 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
     } else if let Some(idx) = state.selected_clip_index
         && let Some(clip) = state.clips.get(idx)
     {
-        // Info mode: show MediaInfo for the selected clip.
         ui.allocate_ui(video_size, |ui| {
             egui::ScrollArea::vertical()
                 .id_salt("probe_info_scroll")
@@ -137,11 +140,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
             .unwrap_or(1.0)
             .max(1.0);
 
-        // Sync slider from current PTS while playing.
-        // avio API gap: PreviewPlayer has no current_pts() method —
-        // we track pts from TimedRgbaSink::push_frame() into
-        // AppState::current_pts.
-        if is_playing && let Some(pts) = state.current_pts {
+        if is_active && let Some(pts) = state.current_pts {
             state.seek_pos_secs = pts.as_secs_f64().min(duration_secs);
         }
 
@@ -150,7 +149,6 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
                 egui::Slider::new(&mut state.seek_pos_secs, 0.0..=duration_secs).show_value(false),
             );
 
-            // Draw IN (green) and OUT (orange) markers on the seek bar.
             if let Some(clip) = state.clips.get(idx) {
                 let r = slider_resp.rect;
                 if let Some(in_pt) = clip.in_point {
@@ -171,7 +169,6 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
                 }
             }
 
-            // Draw keyframe tick marks (blue, 4 px tall) above the seek bar.
             {
                 let r = slider_resp.rect;
                 for kf in &state.keyframes {
@@ -184,7 +181,6 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
                 }
             }
 
-            // Timecode: HH:MM:SS.mmm
             let t = state.seek_pos_secs;
             let h = (t / 3600.0) as u64;
             let m = ((t % 3600.0) / 60.0) as u64;
@@ -192,28 +188,19 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
             let ms = ((t % 1.0) * 1000.0) as u64;
             ui.monospace(format!("{h:02}:{m:02}:{s:02}.{ms:03}"));
 
-            // Seek mode toggle.
-            // avio API gap: DecodeBuffer::seek_coarse() is not exposed at
-            // PreviewPlayer level, so both modes currently use player.seek()
-            // (exact). The toggle is wired for when avio surfaces coarse seek.
+            // seek_coarse() still takes &mut self (same constraint as seek()),
+            // so both modes stop + respawn from the target position. The toggle
+            // decides whether to snap to the nearest keyframe first.
             let mode_label = if state.seek_exact { "Exact" } else { "Coarse" };
             ui.toggle_value(&mut state.seek_exact, mode_label)
                 .on_hover_text("Exact: frame-accurate but slow\nCoarse: nearest keyframe, fast");
 
-            // avio API gap: seek() takes &mut self — cannot call during
-            // run(). Workaround: stop + respawn from the target position.
             if slider_resp.drag_stopped() {
-                // Snap to nearest keyframe in Coarse mode.
                 if !state.seek_exact {
                     state.seek_pos_secs =
                         snap_to_nearest_keyframe(state.seek_pos_secs, &state.keyframes, 0.5);
                 }
-                if let Some(stop) = state.player_stop.take() {
-                    stop.store(true, std::sync::atomic::Ordering::Release);
-                }
-                state.player_thread = None;
-                state.pending_stop_rx = None;
-                state.pending_proxy_rx = None;
+                stop_player(state);
                 let target = Duration::from_secs_f64(state.seek_pos_secs);
                 if let Some(path) = state.clips.get(idx).map(|c| c.path.clone()) {
                     let proxy_dir = state
@@ -221,39 +208,27 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
                         .get(idx)
                         .and_then(|c| c.path.parent())
                         .map(|p| p.join("proxies"));
-                    let (thread, stop_rx, proxy_rx) = player::spawn_player(
-                        path,
-                        Arc::clone(&state.frame_handle),
-                        ctx.clone(),
-                        Some(target),
-                        proxy_dir,
-                        Arc::clone(&state.rate_handle),
-                        state.av_offset_ms as i64,
-                    );
-                    state.player_thread = Some(thread);
-                    state.pending_stop_rx = Some(stop_rx);
-                    state.pending_proxy_rx = Some(proxy_rx);
-                    state.proxy_active = false;
+                    spawn_and_store(state, path, ctx, Some(target), proxy_dir);
                 }
             }
         });
     }
 
     ui.horizontal(|ui| {
-        if is_playing {
-            // avio API gap: pause() takes &mut self so it cannot be called
-            // while run() blocks the player thread. Pause stops playback.
-            if ui.button("⏸ Pause").clicked()
-                && let Some(stop) = state.player_stop.take()
+        if is_active {
+            if is_paused {
+                if ui.button("▶ Resume").clicked()
+                    && let Some(pause) = &state.player_pause
+                {
+                    pause.store(false, Ordering::Relaxed);
+                }
+            } else if ui.button("⏸ Pause").clicked()
+                && let Some(pause) = &state.player_pause
             {
-                stop.store(true, std::sync::atomic::Ordering::Release);
-                state.proxy_active = false;
+                pause.store(true, Ordering::Relaxed);
             }
-            if ui.button("⏹ Stop").clicked()
-                && let Some(stop) = state.player_stop.take()
-            {
-                stop.store(true, std::sync::atomic::Ordering::Release);
-                state.proxy_active = false;
+            if ui.button("⏹ Stop").clicked() {
+                stop_player(state);
             }
         } else if let Some(idx) = state.monitor_clip_index {
             let has_video = state
@@ -270,26 +245,12 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
                     .get(idx)
                     .and_then(|c| c.path.parent())
                     .map(|p| p.join("proxies"));
-                let (thread, stop_rx, proxy_rx) = player::spawn_player(
-                    path,
-                    Arc::clone(&state.frame_handle),
-                    ctx.clone(),
-                    None,
-                    proxy_dir,
-                    Arc::clone(&state.rate_handle),
-                    state.av_offset_ms as i64,
-                );
-                state.player_thread = Some(thread);
-                state.pending_stop_rx = Some(stop_rx);
-                state.pending_proxy_rx = Some(proxy_rx);
-                state.proxy_active = false;
+                spawn_and_store(state, path, ctx, None, proxy_dir);
             } else if !has_video {
                 ui.label("No video stream");
             }
         }
-        // Rate selector — visible whenever a clip is loaded.
-        // avio API gap: PreviewPlayer has no set_rate() — rate is applied
-        // inside TimedRgbaSink::push_frame by scaling the sleep duration.
+
         if state.monitor_clip_index.is_some() {
             ui.separator();
             for (rate, label) in [(0.25_f64, "0.25×"), (0.5, "0.5×"), (1.0, "1×"), (2.0, "2×")]
@@ -299,21 +260,14 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
                     .clicked()
                 {
                     state.playback_rate = rate;
-                    state
-                        .rate_handle
-                        .store(rate.to_bits(), std::sync::atomic::Ordering::Relaxed);
+                    state.rate_handle.store(rate.to_bits(), Ordering::Relaxed);
                 }
             }
         }
     });
 
-    // A/V offset row — visible whenever a clip is loaded.
-    // avio API gap: set_av_offset(&self) uses AtomicI64 (thread-safe)
-    // but there is no av_offset_handle() method analogous to
-    // stop_handle(). Without a handle the UI thread cannot write to
-    // the player while run() holds &mut self on the player thread.
-    // Workaround: stop + respawn at current position on drag release.
-    if let Some(idx) = state.monitor_clip_index {
+    // A/V offset row — live-updates via av_offset_handle (no stop+respawn needed).
+    if state.monitor_clip_index.is_some() {
         ui.horizontal(|ui| {
             ui.label("A/V:");
             let av_resp = ui.add(
@@ -323,65 +277,13 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
                     .suffix(" ms"),
             );
             let should_apply = av_resp.drag_stopped() || (!av_resp.dragged() && av_resp.changed());
-            if should_apply && is_playing {
-                if let Some(stop) = state.player_stop.take() {
-                    stop.store(true, std::sync::atomic::Ordering::Release);
-                }
-                state.player_thread = None;
-                state.pending_stop_rx = None;
-                state.pending_proxy_rx = None;
-                let target = Duration::from_secs_f64(state.seek_pos_secs);
-                if let Some(path) = state.clips.get(idx).map(|c| c.path.clone()) {
-                    let proxy_dir = state
-                        .clips
-                        .get(idx)
-                        .and_then(|c| c.path.parent())
-                        .map(|p| p.join("proxies"));
-                    let (thread, stop_rx, proxy_rx) = player::spawn_player(
-                        path,
-                        Arc::clone(&state.frame_handle),
-                        ctx.clone(),
-                        Some(target),
-                        proxy_dir,
-                        Arc::clone(&state.rate_handle),
-                        state.av_offset_ms as i64,
-                    );
-                    state.player_thread = Some(thread);
-                    state.pending_stop_rx = Some(stop_rx);
-                    state.pending_proxy_rx = Some(proxy_rx);
-                    state.proxy_active = false;
-                }
+            if should_apply && let Some(av_offset) = &state.player_av_offset {
+                av_offset.store(state.av_offset_ms as i64, Ordering::Relaxed);
             }
             if ui.small_button("Reset").clicked() {
                 state.av_offset_ms = 0;
-                if is_playing {
-                    if let Some(stop) = state.player_stop.take() {
-                        stop.store(true, std::sync::atomic::Ordering::Release);
-                    }
-                    state.player_thread = None;
-                    state.pending_stop_rx = None;
-                    state.pending_proxy_rx = None;
-                    let target = Duration::from_secs_f64(state.seek_pos_secs);
-                    if let Some(path) = state.clips.get(idx).map(|c| c.path.clone()) {
-                        let proxy_dir = state
-                            .clips
-                            .get(idx)
-                            .and_then(|c| c.path.parent())
-                            .map(|p| p.join("proxies"));
-                        let (thread, stop_rx, proxy_rx) = player::spawn_player(
-                            path,
-                            Arc::clone(&state.frame_handle),
-                            ctx.clone(),
-                            Some(target),
-                            proxy_dir,
-                            Arc::clone(&state.rate_handle),
-                            0_i64,
-                        );
-                        state.player_thread = Some(thread);
-                        state.pending_stop_rx = Some(stop_rx);
-                        state.pending_proxy_rx = Some(proxy_rx);
-                        state.proxy_active = false;
-                    }
+                if let Some(av_offset) = &state.player_av_offset {
+                    av_offset.store(0, Ordering::Relaxed);
                 }
             }
         });
@@ -424,7 +326,6 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
                     egui::Color32::from_rgb(255, 140, 0),
                     format!("OUT {out_str}"),
                 );
-                // Warn if in_point ≥ out_point (invalid range).
                 if let (Some(i), Some(o)) = (clip.in_point, clip.out_point)
                     && i >= o
                 {
@@ -433,6 +334,46 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
             }
         });
     }
+}
+
+/// Stops the active player and clears all player-related state.
+fn stop_player(state: &mut state::AppState) {
+    if let Some(stop) = state.player_stop.take() {
+        stop.store(true, Ordering::Release);
+    }
+    state.player_thread = None;
+    state.pending_stop_rx = None;
+    state.pending_proxy_rx = None;
+    state.pending_pause_rx = None;
+    state.pending_av_offset_rx = None;
+    state.player_pause = None;
+    state.player_av_offset = None;
+    state.proxy_active = false;
+}
+
+/// Spawns a new player and stores all resulting handles in `state`.
+fn spawn_and_store(
+    state: &mut state::AppState,
+    path: std::path::PathBuf,
+    ctx: &egui::Context,
+    start_pos: Option<Duration>,
+    proxy_dir: Option<std::path::PathBuf>,
+) {
+    let (thread, stop_rx, proxy_rx, pause_rx, av_offset_rx) = player::spawn_player(
+        path,
+        Arc::clone(&state.frame_handle),
+        ctx.clone(),
+        start_pos,
+        proxy_dir,
+        Arc::clone(&state.rate_handle),
+        state.av_offset_ms as i64,
+    );
+    state.player_thread = Some(thread);
+    state.pending_stop_rx = Some(stop_rx);
+    state.pending_proxy_rx = Some(proxy_rx);
+    state.pending_pause_rx = Some(pause_rx);
+    state.pending_av_offset_rx = Some(av_offset_rx);
+    state.proxy_active = false;
 }
 
 fn snap_to_nearest_keyframe(
