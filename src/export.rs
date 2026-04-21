@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -10,6 +11,8 @@ pub struct ExportClip {
     pub start_on_track: Duration,
     pub in_point: Option<Duration>,
     pub out_point: Option<Duration>,
+    pub transition: Option<avio::XfadeTransition>,
+    pub transition_duration: Duration,
 }
 
 /// Send-safe snapshot of all timeline tracks, constructed on the main thread
@@ -28,15 +31,17 @@ pub struct ExportSnapshot {
 }
 
 /// Spawns a background task that builds an `avio::Timeline` from the snapshot
-/// and calls `Timeline::render()`. Returns an `ExportHandle` whose `status`
-/// field can be polled from the render loop.
+/// and calls `Timeline::render_with_progress()`. Returns an `ExportHandle`
+/// whose `status` and `progress` fields can be polled from the render loop.
 pub fn spawn_export(snapshot: ExportSnapshot, output_path: PathBuf) -> ExportHandle {
     let status = Arc::new(Mutex::new(ExportStatus::Running));
+    let progress = Arc::new(AtomicU32::new(0));
     let status_clone = Arc::clone(&status);
+    let progress_clone = Arc::clone(&progress);
     let output_clone = output_path.clone();
 
     tokio::task::spawn_blocking(move || {
-        let result = build_and_render(snapshot, &output_clone);
+        let result = build_and_render(snapshot, &output_clone, &progress_clone);
         if let Ok(mut guard) = status_clone.lock() {
             *guard = match result {
                 Ok(()) => ExportStatus::Done(output_clone),
@@ -45,7 +50,7 @@ pub fn spawn_export(snapshot: ExportSnapshot, output_path: PathBuf) -> ExportHan
         }
     });
 
-    ExportHandle { status }
+    ExportHandle { status, progress }
 }
 
 fn clips_to_avio(clips: Vec<ExportClip>) -> Vec<avio::Clip> {
@@ -53,15 +58,23 @@ fn clips_to_avio(clips: Vec<ExportClip>) -> Vec<avio::Clip> {
         .into_iter()
         .map(|c| {
             let clip = avio::Clip::new(&c.path).offset(c.start_on_track);
-            match (c.in_point, c.out_point) {
+            let clip = match (c.in_point, c.out_point) {
                 (Some(in_pt), Some(out_pt)) => clip.trim(in_pt, out_pt),
                 _ => clip,
+            };
+            match c.transition {
+                Some(kind) => clip.with_transition(kind, c.transition_duration),
+                None => clip,
             }
         })
         .collect()
 }
 
-fn build_and_render(snapshot: ExportSnapshot, output: &std::path::Path) -> Result<(), String> {
+fn build_and_render(
+    snapshot: ExportSnapshot,
+    output: &std::path::Path,
+    progress: &Arc<AtomicU32>,
+) -> Result<(), String> {
     let v1 = clips_to_avio(snapshot.v1_clips);
     let v2 = clips_to_avio(snapshot.v2_clips);
     let a1 = clips_to_avio(snapshot.a1_clips);
@@ -70,14 +83,9 @@ fn build_and_render(snapshot: ExportSnapshot, output: &std::path::Path) -> Resul
         return Err("V1 track has no clips to export".to_string());
     }
 
-    // avio API gap: Timeline::render() has no progress callback.
-    // The real Progress/ProgressCallback types exist in ff-pipeline but are
-    // wired only into Pipeline (single-file transcode), not Timeline.
-    // Progress percentage is therefore unavailable; the UI shows an indeterminate bar.
     let config = snapshot.encoder_config.to_encoder_config();
     let mut builder = avio::Timeline::builder().video_track(v1);
 
-    // Apply output scale via TimelineBuilder::canvas() when enabled.
     if snapshot.export_filters.scale_enabled {
         builder = builder.canvas(
             snapshot.export_filters.output_width,
@@ -95,18 +103,24 @@ fn build_and_render(snapshot: ExportSnapshot, output: &std::path::Path) -> Resul
     // cannot be attached to Timeline — same gap as color balance (docs/issue13.md).
     // loudness_normalize is stored but not applied during render.
 
-    // V2: second video_track() call composites over V1 as an overlay layer.
     if !v2.is_empty() {
         builder = builder.video_track(v2);
     }
-
-    // A1: audio mix track.
     if !a1.is_empty() {
         builder = builder.audio_track(a1);
     }
 
     let timeline = builder.build().map_err(|e| e.to_string())?;
-    timeline.render(output, config).map_err(|e| e.to_string())?;
+
+    let progress_ref = Arc::clone(progress);
+    timeline
+        .render_with_progress(output, config, move |p| {
+            if let Some(pct) = p.percent() {
+                progress_ref.store((pct as f32).to_bits(), Ordering::Relaxed);
+            }
+            true
+        })
+        .map_err(|e| e.to_string())?;
 
     Ok(())
 }

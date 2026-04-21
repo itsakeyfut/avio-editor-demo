@@ -468,9 +468,9 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "avio"
-version = "0.13.0"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c68061573665096492dd8d01b94cbb686861082d0ea5757071184f5d7cf8962d"
+checksum = "25728b9cf0b7db79d867d06d5bdb42ad779a0cb279e7502e8b992b12ed1d0185"
 dependencies = [
  "ff-common",
  "ff-decode",
@@ -1207,18 +1207,18 @@ dependencies = [
 
 [[package]]
 name = "ff-common"
-version = "0.13.0"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47b71c76514cf413521a8c4f227689014dca9cdf48112380f2cdcbaa8d94dfb0"
+checksum = "05168bf7aa0bd5f18bc9a560052c23935bf10dfdcde98db7ba08327a5597687c"
 dependencies = [
  "log",
 ]
 
 [[package]]
 name = "ff-decode"
-version = "0.13.0"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f509901a4d29b5063429e47e0eb859c49b6ec50eba65468f30071ed8cfd24fd6"
+checksum = "208c31b978c652e51633e5062040d6e3ee02e0004aa547beb0816bcde2b6d4c0"
 dependencies = [
  "ff-common",
  "ff-format",
@@ -1231,9 +1231,9 @@ dependencies = [
 
 [[package]]
 name = "ff-encode"
-version = "0.13.0"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4390ebe663622abd5790974e3df6d27d9a3ea72a92e32e80fb572148eb336114"
+checksum = "a0417ce610fa32671b9b977f2c35880f17540a4c3e5fc4087f73d505e854eb2c"
 dependencies = [
  "ff-format",
  "ff-sys",
@@ -1244,9 +1244,9 @@ dependencies = [
 
 [[package]]
 name = "ff-filter"
-version = "0.13.0"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4772ebbda494b42445e2b5f892d55a4adc6b853a81aecd99fa709d23ee282a0e"
+checksum = "96168a7289598ba9ed2125986ceb2a1d188cdc88f04b548fdb9bd1673aceb318"
 dependencies = [
  "ff-common",
  "ff-format",
@@ -1258,9 +1258,9 @@ dependencies = [
 
 [[package]]
 name = "ff-format"
-version = "0.13.0"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "132298b6f9772b6139c707bb0030c23a687fba6f6f337a75cb3351812a4e95cb"
+checksum = "b906e213d928015762650cb69f1948f69df988d8118b293de66f9a4f2ad24bea"
 dependencies = [
  "ff-common",
  "log",
@@ -1269,9 +1269,9 @@ dependencies = [
 
 [[package]]
 name = "ff-pipeline"
-version = "0.13.0"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7981da1a05b37db54e8efb40a775e3043594a9b9c26954f9d389918d57828b0c"
+checksum = "8f3ca41a104437f525c0cbd0480e59ad3ea51f7b94f5277c9ad7311fb7995785"
 dependencies = [
  "ff-common",
  "ff-decode",
@@ -1284,9 +1284,9 @@ dependencies = [
 
 [[package]]
 name = "ff-preview"
-version = "0.13.0"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b2f08c17faf3402826e55ef2858bd1eaad949ffd9d842a221b6bca8db5a0f6d"
+checksum = "b2899b596b4cde8f98368234eed5aa3ddfe3e5725ddc6899b1214b6696439649"
 dependencies = [
  "ff-decode",
  "ff-encode",
@@ -1302,9 +1302,9 @@ dependencies = [
 
 [[package]]
 name = "ff-probe"
-version = "0.13.0"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b144a6464ea23715afa30d355956fb235d8988301c4fdbee0584457e05990248"
+checksum = "c1f648d9aa3579035c18c7be0325538c717e21967db088bf3496bdad5a5cf41e"
 dependencies = [
  "ff-format",
  "ff-sys",
@@ -1314,9 +1314,9 @@ dependencies = [
 
 [[package]]
 name = "ff-sys"
-version = "0.13.0"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b447319117ffd0a05cc753d7a53124e9b5d298c7fc08d21c8c8de27a8a54526e"
+checksum = "5ab4398e887edc782ee6bc9f245f21cebbfc58dcb051bd149903b02119888876"
 dependencies = [
  "bindgen",
  "log",

@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
@@ -27,6 +27,10 @@ pub struct AppState {
     pub player_thread: Option<std::thread::JoinHandle<()>>,
     pub player_stop: Option<Arc<AtomicBool>>,
     pub pending_stop_rx: Option<mpsc::Receiver<Arc<AtomicBool>>>,
+    pub player_pause: Option<Arc<AtomicBool>>,
+    pub pending_pause_rx: Option<mpsc::Receiver<Arc<AtomicBool>>>,
+    pub player_av_offset: Option<Arc<AtomicI64>>,
+    pub pending_av_offset_rx: Option<mpsc::Receiver<Arc<AtomicI64>>>,
     pub monitor_clip_index: Option<usize>,
     pub seek_pos_secs: f64,
     pub seek_exact: bool,
@@ -80,6 +84,10 @@ impl Default for AppState {
             player_thread: None,
             player_stop: None,
             pending_stop_rx: None,
+            player_pause: None,
+            pending_pause_rx: None,
+            player_av_offset: None,
+            pending_av_offset_rx: None,
             monitor_clip_index: None,
             seek_pos_secs: 0.0,
             seek_exact: false,
@@ -190,6 +198,9 @@ pub enum ExportStatus {
 
 pub struct ExportHandle {
     pub status: Arc<Mutex<ExportStatus>>,
+    /// Export progress `0.0..=1.0` stored as `f32::to_bits()`. `0.0` until the
+    /// first progress callback fires.
+    pub progress: Arc<AtomicU32>,
 }
 
 /// EBU R128 loudness measurement result.
@@ -275,8 +286,6 @@ pub struct TimelineClip {
     pub out_point: Option<Duration>,
     /// Transition applied at the start of this clip (between the previous clip and this one).
     /// `None` means a hard cut.
-    /// avio API gap: `ff_pipeline::Clip` has no transition field and `TimelineBuilder` has no
-    /// transition API, so this is stored as metadata only until avio adds export support.
     pub transition: Option<avio::XfadeTransition>,
     /// Duration of the transition. Default: 500 ms.
     pub transition_duration: Duration,

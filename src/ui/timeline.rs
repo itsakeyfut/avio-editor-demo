@@ -28,6 +28,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     start_on_track: tc.start_on_track,
                     in_point: tc.in_point,
                     out_point: tc.out_point,
+                    transition: tc.transition,
+                    transition_duration: tc.transition_duration,
                 };
                 let snapshot = export::ExportSnapshot {
                     v1_clips: state.timeline.tracks[0]
@@ -212,7 +214,16 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
         let status = handle.status.lock().unwrap().clone();
         match status {
             state::ExportStatus::Running => {
-                ui.add(egui::ProgressBar::new(0.0).animate(true).text("Exporting…"));
+                let pct =
+                    f32::from_bits(handle.progress.load(std::sync::atomic::Ordering::Relaxed))
+                        / 100.0;
+                let bar = egui::ProgressBar::new(pct).animate(pct == 0.0);
+                let bar = if pct > 0.0 {
+                    bar.text(format!("{:.0}%", pct * 100.0))
+                } else {
+                    bar.text("Exporting…")
+                };
+                ui.add(bar);
             }
             state::ExportStatus::Done(path) => {
                 ui.horizontal(|ui| {

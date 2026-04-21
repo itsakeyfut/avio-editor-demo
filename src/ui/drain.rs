@@ -142,14 +142,24 @@ fn drain_player_handles(state: &mut AppState) {
         state.proxy_active = active;
         state.pending_proxy_rx = None;
     }
+    if let Some(rx) = &state.pending_pause_rx
+        && let Ok(pause) = rx.try_recv()
+    {
+        state.player_pause = Some(pause);
+        state.pending_pause_rx = None;
+    }
+    if let Some(rx) = &state.pending_av_offset_rx
+        && let Ok(av_offset) = rx.try_recv()
+    {
+        state.player_av_offset = Some(av_offset);
+        state.pending_av_offset_rx = None;
+    }
 }
 
 fn drain_frame(state: &mut AppState, ctx: &egui::Context) {
     if let Ok(mut guard) = state.frame_handle.try_lock()
         && let Some(frame) = guard.take()
     {
-        // avio API gap: PreviewPlayer has no current_pts() — track pts
-        // from TimedRgbaSink::push_frame() into AppState::current_pts.
         state.current_pts = Some(frame.pts);
         let image = egui::ColorImage::from_rgba_unmultiplied(
             [frame.width as usize, frame.height as usize],
