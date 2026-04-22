@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-avio = { version = "0.13.1", features = [
+avio = { version = "0.14.1", features = [
     "decode",
     "encode",
     "filter",
@@ -24,3 +24,16 @@ env_logger = "0.11.10"
 image      = { version = "0.25.10", default-features = false, features = ["png"] }
 serde      = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
+cpal       = "0.15"
+
+[patch.crates-io]
+avio        = { path = "../avio/crates/avio" }
+ff-preview  = { path = "../avio/crates/ff-preview" }
+ff-pipeline = { path = "../avio/crates/ff-pipeline" }
+ff-filter   = { path = "../avio/crates/ff-filter" }
+ff-decode   = { path = "../avio/crates/ff-decode" }
+ff-encode   = { path = "../avio/crates/ff-encode" }
+ff-format   = { path = "../avio/crates/ff-format" }
+ff-probe    = { path = "../avio/crates/ff-probe" }
+ff-sys      = { path = "../avio/crates/ff-sys" }
+ff-common   = { path = "../avio/crates/ff-common" }
