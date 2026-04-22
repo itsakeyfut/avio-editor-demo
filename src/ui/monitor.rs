@@ -29,8 +29,19 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
     let video_size = egui::vec2(available.x, (available.y - ctrl_height).max(0.0));
 
     if state.monitor_clip_index.is_some() {
+        let is_audio_only = state
+            .monitor_clip_index
+            .and_then(|idx| state.clips.get(idx))
+            .map(|c| c.info.primary_video().is_none() && c.info.primary_audio().is_some())
+            .unwrap_or(false);
         if let Some(tex) = &state.preview_texture {
             ui.image(egui::load::SizedTexture::new(tex.id(), video_size));
+        } else if is_audio_only {
+            ui.allocate_ui(video_size, |ui| {
+                ui.centered_and_justified(|ui| {
+                    ui.heading("\u{1F3B5}");
+                });
+            });
         } else {
             ui.allocate_ui(video_size, |ui| {
                 ui.centered_and_justified(|ui| {
@@ -225,12 +236,12 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
                 stop_player(state);
             }
         } else if let Some(idx) = state.monitor_clip_index {
-            let has_video = state
+            let has_media = state
                 .clips
                 .get(idx)
-                .map(|c| c.info.primary_video().is_some())
+                .map(|c| c.info.primary_video().is_some() || c.info.primary_audio().is_some())
                 .unwrap_or(false);
-            if has_video
+            if has_media
                 && ui.button("▶ Play").clicked()
                 && let Some(path) = state.clips.get(idx).map(|c| c.path.clone())
             {
@@ -240,8 +251,6 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
                     .and_then(|c| c.path.parent())
                     .map(|p| p.join("proxies"));
                 spawn_and_store(state, path, ctx, None, proxy_dir);
-            } else if !has_video {
-                ui.label("No video stream");
             }
         }
 

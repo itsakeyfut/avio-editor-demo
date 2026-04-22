@@ -91,7 +91,22 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
                     ));
                 }
                 None => {
-                    ui.label("\u{1F3AC}");
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(48.0, 27.0), egui::Sense::hover());
+                    let icon = if clip.info.primary_video().is_none()
+                        && clip.info.primary_audio().is_some()
+                    {
+                        "\u{1F3B5}"
+                    } else {
+                        "\u{1F3AC}"
+                    };
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        icon,
+                        egui::FontId::proportional(14.0),
+                        ui.visuals().text_color(),
+                    );
                 }
             }
             let name = clip.path.file_name().unwrap_or_default().to_string_lossy();
@@ -159,23 +174,29 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
         state.is_paused = false;
         state.monitor_clip_index = Some(idx);
 
-        // Only launch a player if the clip has a video stream.
-        // Audio-only files are supported by PreviewPlayer in avio 0.13.1 but we
-        // have no audio output (cpal not wired), so we skip playback for them.
         let has_video = state
             .clips
             .get(idx)
             .map(|c| c.info.primary_video().is_some())
             .unwrap_or(false);
-        if has_video && let Some(path) = state.clips.get(idx).map(|c| c.path.clone()) {
-            // Clear stale keyframes and enumerate new ones for this clip.
-            state.keyframes.clear();
-            let kf_tx = state.keyframe_tx.clone();
-            let kf_path = path.clone();
-            tokio::task::spawn_blocking(move || {
-                let kfs = analysis::enumerate_keyframes(&kf_path);
-                let _ = kf_tx.send(kfs);
-            });
+        let has_audio = state
+            .clips
+            .get(idx)
+            .map(|c| c.info.primary_audio().is_some())
+            .unwrap_or(false);
+        if (has_video || has_audio)
+            && let Some(path) = state.clips.get(idx).map(|c| c.path.clone())
+        {
+            if has_video {
+                // Clear stale keyframes and enumerate new ones for this clip.
+                state.keyframes.clear();
+                let kf_tx = state.keyframe_tx.clone();
+                let kf_path = path.clone();
+                tokio::task::spawn_blocking(move || {
+                    let kfs = analysis::enumerate_keyframes(&kf_path);
+                    let _ = kf_tx.send(kfs);
+                });
+            }
             let proxy_dir = state
                 .clips
                 .get(idx)
