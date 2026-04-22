@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use crate::{player, state};
@@ -19,11 +18,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
         .as_ref()
         .map(|h| !h.is_finished())
         .unwrap_or(false);
-    let is_paused = state
-        .player_pause
-        .as_ref()
-        .map(|h| h.load(Ordering::Relaxed))
-        .unwrap_or(false);
+    let is_paused = state.is_paused;
 
     let ctrl_height = if state.monitor_clip_index.is_some() {
         128.0
@@ -188,9 +183,6 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
             let ms = ((t % 1.0) * 1000.0) as u64;
             ui.monospace(format!("{h:02}:{m:02}:{s:02}.{ms:03}"));
 
-            // seek_coarse() still takes &mut self (same constraint as seek()),
-            // so both modes stop + respawn from the target position. The toggle
-            // decides whether to snap to the nearest keyframe first.
             let mode_label = if state.seek_exact { "Exact" } else { "Coarse" };
             ui.toggle_value(&mut state.seek_exact, mode_label)
                 .on_hover_text("Exact: frame-accurate but slow\nCoarse: nearest keyframe, fast");
@@ -218,14 +210,16 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
         if is_active {
             if is_paused {
                 if ui.button("▶ Resume").clicked()
-                    && let Some(pause) = &state.player_pause
+                    && let Some(handle) = &state.player_handle
                 {
-                    pause.store(false, Ordering::Relaxed);
+                    handle.play();
+                    state.is_paused = false;
                 }
             } else if ui.button("⏸ Pause").clicked()
-                && let Some(pause) = &state.player_pause
+                && let Some(handle) = &state.player_handle
             {
-                pause.store(true, Ordering::Relaxed);
+                handle.pause();
+                state.is_paused = true;
             }
             if ui.button("⏹ Stop").clicked() {
                 stop_player(state);
@@ -260,13 +254,15 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
                     .clicked()
                 {
                     state.playback_rate = rate;
-                    state.rate_handle.store(rate.to_bits(), Ordering::Relaxed);
+                    if let Some(handle) = &state.player_handle {
+                        handle.set_rate(rate);
+                    }
                 }
             }
         }
     });
 
-    // A/V offset row — live-updates via av_offset_handle (no stop+respawn needed).
+    // A/V offset row — live-updates via PlayerHandle::set_av_offset (no stop+respawn needed).
     if state.monitor_clip_index.is_some() {
         ui.horizontal(|ui| {
             ui.label("A/V:");
@@ -277,13 +273,13 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
                     .suffix(" ms"),
             );
             let should_apply = av_resp.drag_stopped() || (!av_resp.dragged() && av_resp.changed());
-            if should_apply && let Some(av_offset) = &state.player_av_offset {
-                av_offset.store(state.av_offset_ms as i64, Ordering::Relaxed);
+            if should_apply && let Some(handle) = &state.player_handle {
+                handle.set_av_offset(state.av_offset_ms as i64);
             }
             if ui.small_button("Reset").clicked() {
                 state.av_offset_ms = 0;
-                if let Some(av_offset) = &state.player_av_offset {
-                    av_offset.store(0, Ordering::Relaxed);
+                if let Some(handle) = &state.player_handle {
+                    handle.set_av_offset(0);
                 }
             }
         });
@@ -338,16 +334,13 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
 
 /// Stops the active player and clears all player-related state.
 fn stop_player(state: &mut state::AppState) {
-    if let Some(stop) = state.player_stop.take() {
-        stop.store(true, Ordering::Release);
+    if let Some(handle) = state.player_handle.take() {
+        handle.stop();
     }
     state.player_thread = None;
-    state.pending_stop_rx = None;
+    state.pending_handle_rx = None;
     state.pending_proxy_rx = None;
-    state.pending_pause_rx = None;
-    state.pending_av_offset_rx = None;
-    state.player_pause = None;
-    state.player_av_offset = None;
+    state.is_paused = false;
     state.proxy_active = false;
 }
 
@@ -359,21 +352,20 @@ fn spawn_and_store(
     start_pos: Option<Duration>,
     proxy_dir: Option<std::path::PathBuf>,
 ) {
-    let (thread, stop_rx, proxy_rx, pause_rx, av_offset_rx) = player::spawn_player(
+    let (thread, handle_rx, proxy_rx) = player::spawn_player(
         path,
         Arc::clone(&state.frame_handle),
         ctx.clone(),
         start_pos,
         proxy_dir,
-        Arc::clone(&state.rate_handle),
+        state.playback_rate,
         state.av_offset_ms as i64,
     );
     state.player_thread = Some(thread);
-    state.pending_stop_rx = Some(stop_rx);
+    state.pending_handle_rx = Some(handle_rx);
     state.pending_proxy_rx = Some(proxy_rx);
-    state.pending_pause_rx = Some(pause_rx);
-    state.pending_av_offset_rx = Some(av_offset_rx);
     state.proxy_active = false;
+    state.is_paused = false;
 }
 
 fn snap_to_nearest_keyframe(

@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64};
+use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
@@ -25,12 +25,9 @@ pub struct AppState {
     pub frame_handle: Arc<Mutex<Option<avio::RgbaFrame>>>,
     pub preview_texture: Option<egui::TextureHandle>,
     pub player_thread: Option<std::thread::JoinHandle<()>>,
-    pub player_stop: Option<Arc<AtomicBool>>,
-    pub pending_stop_rx: Option<mpsc::Receiver<Arc<AtomicBool>>>,
-    pub player_pause: Option<Arc<AtomicBool>>,
-    pub pending_pause_rx: Option<mpsc::Receiver<Arc<AtomicBool>>>,
-    pub player_av_offset: Option<Arc<AtomicI64>>,
-    pub pending_av_offset_rx: Option<mpsc::Receiver<Arc<AtomicI64>>>,
+    pub player_handle: Option<avio::PlayerHandle>,
+    pub pending_handle_rx: Option<mpsc::Receiver<avio::PlayerHandle>>,
+    pub is_paused: bool,
     pub monitor_clip_index: Option<usize>,
     pub seek_pos_secs: f64,
     pub seek_exact: bool,
@@ -39,7 +36,6 @@ pub struct AppState {
     pub proxy_active: bool,
     pub pending_proxy_rx: Option<mpsc::Receiver<bool>>,
     pub playback_rate: f64,
-    pub rate_handle: Arc<AtomicU64>,
     pub av_offset_ms: i32,
     pub export: Option<ExportHandle>,
     pub encoder_config: EncoderConfigDraft,
@@ -82,12 +78,9 @@ impl Default for AppState {
             frame_handle: Arc::new(Mutex::new(None)),
             preview_texture: None,
             player_thread: None,
-            player_stop: None,
-            pending_stop_rx: None,
-            player_pause: None,
-            pending_pause_rx: None,
-            player_av_offset: None,
-            pending_av_offset_rx: None,
+            player_handle: None,
+            pending_handle_rx: None,
+            is_paused: false,
             monitor_clip_index: None,
             seek_pos_secs: 0.0,
             seek_exact: false,
@@ -96,7 +89,6 @@ impl Default for AppState {
             proxy_active: false,
             pending_proxy_rx: None,
             playback_rate: 1.0,
-            rate_handle: Arc::new(AtomicU64::new(1.0_f64.to_bits())),
             av_offset_ms: 0,
             export: None,
             encoder_config: EncoderConfigDraft::default(),

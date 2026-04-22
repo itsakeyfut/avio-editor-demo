@@ -11,7 +11,7 @@ mod trim;
 mod ui;
 
 fn main() -> eframe::Result<()> {
-    env_logger::init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     let rt = tokio::runtime::Runtime::new().map_err(|e| eframe::Error::AppCreation(Box::new(e)))?;
     let _rt_guard = rt.enter();
 

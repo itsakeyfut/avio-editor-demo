@@ -130,29 +130,17 @@ fn drain_proxy_jobs(state: &mut AppState) {
 }
 
 fn drain_player_handles(state: &mut AppState) {
-    if let Some(rx) = &state.pending_stop_rx
-        && let Ok(stop) = rx.try_recv()
+    if let Some(rx) = &state.pending_handle_rx
+        && let Ok(handle) = rx.try_recv()
     {
-        state.player_stop = Some(stop);
-        state.pending_stop_rx = None;
+        state.player_handle = Some(handle);
+        state.pending_handle_rx = None;
     }
     if let Some(rx) = &state.pending_proxy_rx
         && let Ok(active) = rx.try_recv()
     {
         state.proxy_active = active;
         state.pending_proxy_rx = None;
-    }
-    if let Some(rx) = &state.pending_pause_rx
-        && let Ok(pause) = rx.try_recv()
-    {
-        state.player_pause = Some(pause);
-        state.pending_pause_rx = None;
-    }
-    if let Some(rx) = &state.pending_av_offset_rx
-        && let Ok(av_offset) = rx.try_recv()
-    {
-        state.player_av_offset = Some(av_offset);
-        state.pending_av_offset_rx = None;
     }
 }
 

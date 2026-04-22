@@ -1,76 +1,53 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-use avio::RgbaFrame;
+use avio::{PlayerHandle, RgbaFrame};
 
-// ── TimedRgbaSink ──────────────────────────────────────────────────────────────
+// ── EguiFrameSink ─────────────────────────────────────────────────────────────
 
-/// `FrameSink` implementation that stores the latest RGBA frame and applies
-/// wall-clock pacing for audio files.
-///
-/// `PreviewPlayer::run()` uses `MasterClock::Audio` when the file has an audio
-/// stream, advancing only when `pop_audio_samples()` is called. Since we have
-/// no audio output (cpal not wired), the audio clock never starts and frames
-/// arrive at decoder speed. We compensate with wall-clock pacing here.
-///
-/// For video-only files (`MasterClock::System`) the player already paces via
-/// `Instant`. `TimedRgbaSink` adds the residual delay between the player's 1×
-/// pacing and the target rate, which is zero at 1× and correct at ≤1× rates.
-/// At >1× rates the player's 1× pacing is the bottleneck; callers should also
-/// call `player.set_rate()` to make `MasterClock::System` aware of the rate.
-struct TimedRgbaSink {
+/// `FrameSink` that stores the latest RGBA frame and wakes the egui render loop.
+struct EguiFrameSink {
     frame_handle: Arc<Mutex<Option<RgbaFrame>>>,
     ctx: egui::Context,
-    /// `(wall_clock_start, base_pts)` set on the first frame (and reset on rate change).
-    start: Option<(Instant, Duration)>,
-    /// Playback rate as `f64` bits stored atomically. Read each frame.
-    rate: Arc<AtomicU64>,
-    /// Last observed rate. When the rate changes, `start` is reset so the new
-    /// rate is applied from the current position rather than the clip origin.
-    last_rate: f64,
+    /// Stereo frames consumed by the cpal callback (shared with `try_start_audio_output`).
+    audio_frames: Arc<AtomicU64>,
+    frame_count: u64,
+    /// Wall-clock time of first frame, used to measure audio advancement rate.
+    start_time: Option<Instant>,
 }
 
-impl TimedRgbaSink {
-    fn new(
-        frame_handle: Arc<Mutex<Option<RgbaFrame>>>,
-        ctx: egui::Context,
-        rate: Arc<AtomicU64>,
-    ) -> Self {
-        Self {
-            frame_handle,
-            ctx,
-            start: None,
-            rate,
-            last_rate: 1.0,
-        }
-    }
-}
-
-impl avio::FrameSink for TimedRgbaSink {
+impl avio::FrameSink for EguiFrameSink {
     fn push_frame(&mut self, rgba: &[u8], width: u32, height: u32, pts: Duration) {
-        let rate = f64::from_bits(self.rate.load(Ordering::Relaxed));
-
-        // Reset the clock reference whenever the rate changes mid-playback so
-        // that `target_wall = video_relative / new_rate` doesn't over- or
-        // under-sleep relative to the new reference point.
-        if (rate - self.last_rate).abs() > f64::EPSILON {
-            self.start = None;
-            self.last_rate = rate;
+        let audio_f = self.audio_frames.load(Ordering::Relaxed);
+        let audio_ms = audio_f * 1000 / 48_000;
+        let video_ms = pts.as_millis() as u64;
+        let diff_ms = audio_ms as i64 - video_ms as i64;
+        if self.frame_count < 10 || diff_ms.abs() > 100 {
+            log::warn!(
+                "A/V frame={} video={video_ms}ms audio={audio_ms}ms diff={diff_ms:+}ms",
+                self.frame_count
+            );
         }
 
-        let (wall_start, pts_base) = self.start.get_or_insert_with(|| (Instant::now(), pts));
-
-        let video_relative = pts.saturating_sub(*pts_base);
-        let wall_elapsed = wall_start.elapsed();
-
-        let target_wall = video_relative.div_f64(rate);
-        if let Some(ahead) = target_wall.checked_sub(wall_elapsed)
-            && ahead > Duration::from_millis(1)
-        {
-            std::thread::sleep(ahead);
+        // Periodic audio rate check: logs how fast audio_ms is advancing relative
+        // to wall clock. 100% = real-time; 200% = 2x speed (audio running too fast).
+        if self.start_time.is_none() {
+            self.start_time = Some(Instant::now());
         }
+        if self.frame_count > 0 && self.frame_count % 300 == 299 {
+            let elapsed_ms = self.start_time.unwrap().elapsed().as_millis() as u64;
+            if elapsed_ms > 0 {
+                let rate_pct = audio_ms * 100 / elapsed_ms;
+                log::warn!(
+                    "A/V rate @frame={}: audio={audio_ms}ms wall={elapsed_ms}ms audio_rate={rate_pct}%",
+                    self.frame_count
+                );
+            }
+        }
+
+        self.frame_count += 1;
 
         let mut guard = self
             .frame_handle
@@ -82,41 +59,165 @@ impl avio::FrameSink for TimedRgbaSink {
             height,
             pts,
         });
+        drop(guard);
         self.ctx.request_repaint();
+    }
+}
+
+// ── cpal audio output ─────────────────────────────────────────────────────────
+
+/// Opens the default cpal output stream and drives it with `PlayerHandle::pop_audio_samples`.
+///
+/// This advances `MasterClock::Audio` so the player's A/V sync loop correctly
+/// paces video frames. Returns `None` when no audio output device is available
+/// or the stream cannot be opened; in that case video plays at decoder speed
+/// (too fast for audio-bearing files).
+fn try_start_audio_output(
+    handle: PlayerHandle,
+    audio_frames: Arc<AtomicU64>,
+) -> Option<cpal::Stream> {
+    use cpal::SampleFormat;
+    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+
+    let host = cpal::default_host();
+    let device = match host.default_output_device() {
+        Some(d) => d,
+        None => {
+            log::warn!("cpal: no default output device found");
+            return None;
+        }
+    };
+    let default_cfg = match device.default_output_config() {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("cpal: no default output config: {e}");
+            return None;
+        }
+    };
+
+    let fmt = default_cfg.sample_format();
+    let device_rate = default_cfg.sample_rate().0;
+    let avio_rate = handle.audio_sample_rate().unwrap_or(48_000);
+    log::warn!(
+        "cpal: device default {}Hz {}ch {fmt:?}; opening at {avio_rate}Hz 2ch F32",
+        device_rate,
+        default_cfg.channels(),
+    );
+
+    let stream_config = cpal::StreamConfig {
+        channels: 2,
+        sample_rate: cpal::SampleRate(avio_rate),
+        buffer_size: cpal::BufferSize::Default,
+    };
+
+    let build_result = match fmt {
+        SampleFormat::F32 => {
+            let mut total_samples: u64 = 0;
+            let mut total_returned: u64 = 0;
+            let mut cb_count: u64 = 0;
+            let diag_start = std::time::Instant::now();
+            device.build_output_stream(
+                &stream_config,
+                move |data: &mut [f32], _| {
+                    let samples = handle.pop_audio_samples(data.len());
+                    let n = samples.len().min(data.len());
+                    data[..n].copy_from_slice(&samples[..n]);
+                    data[n..].fill(0.0);
+                    audio_frames.fetch_add((n / 2) as u64, Ordering::Relaxed);
+                    total_samples += data.len() as u64;
+                    total_returned += n as u64;
+                    cb_count += 1;
+                    if cb_count == 200 {
+                        let secs = diag_start.elapsed().as_secs_f64();
+                        log::warn!(
+                            "cpal diag: {total_samples} requested, {total_returned} returned in {secs:.2}s \
+                             => effective rate {:.0} samp/s (expect 96000 for 48kHz stereo)",
+                            total_samples as f64 / secs
+                        );
+                    }
+                },
+                |e| log::warn!("cpal stream error: {e}"),
+                None,
+            )
+        }
+        SampleFormat::I16 => {
+            let audio_frames_i16 = Arc::clone(&audio_frames);
+            device.build_output_stream(
+                &stream_config,
+                move |data: &mut [i16], _| {
+                    let samples = handle.pop_audio_samples(data.len());
+                    let n = samples.len().min(data.len());
+                    for (dst, &src) in data.iter_mut().zip(samples.iter()) {
+                        *dst = (src.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
+                    }
+                    if n < data.len() {
+                        data[n..].fill(0);
+                    }
+                    audio_frames_i16.fetch_add((n / 2) as u64, Ordering::Relaxed);
+                },
+                |e| log::warn!("cpal stream error: {e}"),
+                None,
+            )
+        }
+        other => {
+            log::warn!("cpal: unsupported sample format {other:?}, audio output disabled");
+            return None;
+        }
+    };
+
+    match build_result {
+        Ok(s) => {
+            if let Err(e) = s.play() {
+                log::warn!("cpal: stream.play() failed: {e}");
+                return None;
+            }
+            log::warn!("cpal: audio output started");
+            Some(s)
+        }
+        Err(e) => {
+            log::warn!("cpal: build_output_stream failed: {e}");
+            None
+        }
     }
 }
 
 // ── spawn_player ───────────────────────────────────────────────────────────────
 
-/// Spawns a background thread running `PreviewPlayer::run()`.
+/// Spawns a background thread running `PlayerRunner::run()`.
 ///
-/// Returns `(thread, stop_rx, proxy_rx, pause_rx, av_offset_rx)`. The last four
-/// are one-shot channels that deliver the player's own atomic handles, sent from
-/// the player thread before `run()` blocks. The UI thread can then toggle pause
-/// or update the A/V offset live without stopping the player.
-#[allow(clippy::type_complexity)]
+/// Returns `(thread, handle_rx, proxy_rx)`. `handle_rx` delivers the
+/// `PlayerHandle` once the runner is ready; `proxy_rx` delivers whether a
+/// proxy was activated. Both are one-shot.
 pub fn spawn_player(
     path: PathBuf,
     frame_handle: Arc<Mutex<Option<RgbaFrame>>>,
     ctx: egui::Context,
     start_pos: Option<Duration>,
     proxy_dir: Option<PathBuf>,
-    rate: Arc<AtomicU64>,
+    playback_rate: f64,
     av_offset_ms: i64,
 ) -> (
     std::thread::JoinHandle<()>,
-    mpsc::Receiver<Arc<AtomicBool>>,
+    mpsc::Receiver<PlayerHandle>,
     mpsc::Receiver<bool>,
-    mpsc::Receiver<Arc<AtomicBool>>,
-    mpsc::Receiver<Arc<AtomicI64>>,
 ) {
-    let (stop_tx, stop_rx) = mpsc::sync_channel::<Arc<AtomicBool>>(1);
+    let (handle_tx, handle_rx) = mpsc::sync_channel::<PlayerHandle>(1);
     let (proxy_tx, proxy_rx) = mpsc::sync_channel::<bool>(1);
-    let (pause_tx, pause_rx) = mpsc::sync_channel::<Arc<AtomicBool>>(1);
-    let (av_offset_tx, av_offset_rx) = mpsc::sync_channel::<Arc<AtomicI64>>(1);
 
-    let handle = std::thread::spawn(move || {
-        let mut player = match avio::PreviewPlayer::open(&path) {
+    let thread = std::thread::spawn(move || {
+        // Log native audio rate before opening the player
+        if let Ok(info) = avio::open(&path)
+            && let Some(audio) = info.primary_audio()
+        {
+            log::warn!(
+                "file native audio: {}Hz {}ch codec={}",
+                audio.sample_rate(),
+                audio.channels(),
+                audio.codec_name(),
+            );
+        }
+
+        let player = match avio::PreviewPlayer::open(&path) {
             Ok(p) => p,
             Err(e) => {
                 log::warn!("PreviewPlayer::open failed path={path:?}: {e}");
@@ -124,30 +225,24 @@ pub fn spawn_player(
             }
         };
 
-        // seek() still takes &mut self, so we seek before run() as a
-        // start-position workaround for scrubbing.
-        if let Some(pos) = start_pos
-            && let Err(e) = player.seek(pos)
-        {
-            log::warn!("initial seek to {pos:?} failed: {e}");
-        }
+        let (mut runner, handle) = player.split();
 
-        // Apply the initial A/V offset and rate before run() blocks.
-        player.set_av_offset(av_offset_ms);
-        let initial_rate = f64::from_bits(rate.load(Ordering::Relaxed));
-        player.set_rate(initial_rate);
+        let audio_frames = Arc::new(AtomicU64::new(0));
 
-        // Send all live-control handles back to the UI thread before blocking.
-        let _ = stop_tx.send(player.stop_handle());
-        let _ = pause_tx.send(player.pause_handle());
-        let _ = av_offset_tx.send(player.av_offset_handle());
+        runner.set_sink(Box::new(EguiFrameSink {
+            frame_handle,
+            ctx: ctx.clone(),
+            audio_frames: Arc::clone(&audio_frames),
+            frame_count: 0,
+            start_time: None,
+        }));
 
         let proxy_active = if let Some(ref dir) = proxy_dir {
-            let active = player.use_proxy_if_available(dir);
+            let active = runner.use_proxy_if_available(dir);
             if active {
                 log::info!(
                     "source monitor: proxy active — {}",
-                    player.active_source().display()
+                    runner.active_source().display()
                 );
             }
             active
@@ -156,17 +251,26 @@ pub fn spawn_player(
         };
         let _ = proxy_tx.send(proxy_active);
 
-        player.set_sink(Box::new(TimedRgbaSink::new(
-            frame_handle,
-            ctx.clone(),
-            rate,
-        )));
-        player.play();
-        if let Err(e) = player.run() {
-            log::warn!("PreviewPlayer::run failed: {e}");
+        if let Some(pos) = start_pos {
+            handle.seek(pos);
+        }
+        handle.set_av_offset(av_offset_ms);
+        if playback_rate > 0.0 {
+            handle.set_rate(playback_rate);
+        }
+
+        let _ = handle_tx.send(handle.clone());
+        handle.play();
+
+        // Wire audio output. Keeps stream alive for the duration of run().
+        // Drives MasterClock::Audio so frame pacing works for audio-bearing files.
+        let _audio_stream = try_start_audio_output(handle.clone(), audio_frames);
+
+        if let Err(e) = runner.run() {
+            log::warn!("PlayerRunner::run failed: {e}");
         }
         ctx.request_repaint();
     });
 
-    (handle, stop_rx, proxy_rx, pause_rx, av_offset_rx)
+    (thread, handle_rx, proxy_rx)
 }

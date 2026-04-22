@@ -150,16 +150,13 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
     if let Some(idx) = dbl_clicked_idx {
         state.selected_clip_index = Some(idx);
         // Stop any current player and clear all player state.
-        if let Some(stop) = state.player_stop.take() {
-            stop.store(true, std::sync::atomic::Ordering::Release);
+        if let Some(handle) = state.player_handle.take() {
+            handle.stop();
         }
         state.player_thread = None;
-        state.pending_stop_rx = None;
+        state.pending_handle_rx = None;
         state.pending_proxy_rx = None;
-        state.pending_pause_rx = None;
-        state.pending_av_offset_rx = None;
-        state.player_pause = None;
-        state.player_av_offset = None;
+        state.is_paused = false;
         state.monitor_clip_index = Some(idx);
 
         // Only launch a player if the clip has a video stream.
@@ -184,21 +181,20 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
                 .get(idx)
                 .and_then(|c| c.path.parent())
                 .map(|p| p.join("proxies"));
-            let (thread, stop_rx, proxy_rx, pause_rx, av_offset_rx) = player::spawn_player(
+            let (thread, handle_rx, proxy_rx) = player::spawn_player(
                 path,
                 Arc::clone(&state.frame_handle),
                 ctx.clone(),
                 None,
                 proxy_dir,
-                Arc::clone(&state.rate_handle),
+                state.playback_rate,
                 state.av_offset_ms as i64,
             );
             state.player_thread = Some(thread);
-            state.pending_stop_rx = Some(stop_rx);
+            state.pending_handle_rx = Some(handle_rx);
             state.pending_proxy_rx = Some(proxy_rx);
-            state.pending_pause_rx = Some(pause_rx);
-            state.pending_av_offset_rx = Some(av_offset_rx);
             state.proxy_active = false;
+            state.is_paused = false;
         }
     }
 
