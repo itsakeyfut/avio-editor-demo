@@ -361,6 +361,12 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
     let mut pending_clips: Vec<(usize, usize, f32)> = Vec::new();
     let mut pending_transitions: Vec<(usize, usize, Option<avio::XfadeTransition>, Duration)> =
         Vec::new();
+    // (src_track, src_clip, dst_track, new_start_secs)
+    let mut pending_moves: Vec<(usize, usize, usize, f32)> = Vec::new();
+    let active_drag = state.clip_drag.clone();
+    let mut new_drag: Option<state::TimelineClipDrag> = None;
+    let mut clear_drag = false;
+    let tracks_count = state.timeline.tracks.len();
 
     egui::ScrollArea::horizontal()
         .id_salt("timeline_scroll")
@@ -442,7 +448,15 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     );
 
                     // Lane background — highlight when a clip is dragged over
-                    let bg = if lane_resp.dnd_hover_payload::<usize>().is_some() {
+                    let is_tl_drag_hover = active_drag.is_some()
+                        && ui.input(|i| {
+                            i.pointer.latest_pos().is_some_and(|ptr| {
+                                let y_off = ptr.y - ruler_rect.bottom();
+                                ((y_off / TRACK_HEIGHT).floor() as isize) == track_idx as isize
+                            })
+                        });
+                    let bg = if lane_resp.dnd_hover_payload::<usize>().is_some() || is_tl_drag_hover
+                    {
                         egui::Color32::from_gray(55)
                     } else {
                         egui::Color32::from_gray(35)
@@ -476,8 +490,18 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                 egui::pos2(x, lane_rect.top()),
                                 egui::vec2(w.max(2.0), TRACK_HEIGHT),
                             );
+                            let is_being_dragged = active_drag
+                                .as_ref()
+                                .is_some_and(|d| d.src_track == track_idx && d.src_clip == clip_i);
                             if cr.max.x >= lane_rect.left() && cr.min.x <= lane_rect.right() {
                                 ui.painter().rect_filled(cr, 4.0, clip_color);
+                                if is_being_dragged {
+                                    ui.painter().rect_filled(
+                                        cr,
+                                        4.0,
+                                        egui::Color32::from_black_alpha(140),
+                                    );
+                                }
 
                                 // Waveform — A1 track only
                                 if track.kind == state::TrackKind::Audio1
@@ -538,8 +562,49 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                     }
                                 }
 
-                                // Sprite frame tooltip on hover + context menu on right-click
-                                let clip_resp = ui.allocate_rect(cr, egui::Sense::click());
+                                // Sprite frame tooltip on hover + drag-to-reposition + context menu
+                                let clip_id = egui::Id::new(("tl_clip", track_idx, clip_i));
+                                let clip_resp =
+                                    ui.interact(cr, clip_id, egui::Sense::click_and_drag());
+
+                                if clip_resp.drag_started() {
+                                    let ptr_x = clip_resp
+                                        .interact_pointer_pos()
+                                        .map(|p| p.x)
+                                        .unwrap_or(cr.left());
+                                    let grab = ((ptr_x - lane_rect.left()) / pps
+                                        - tc.start_on_track.as_secs_f32())
+                                    .max(0.0);
+                                    new_drag = Some(state::TimelineClipDrag {
+                                        src_track: track_idx,
+                                        src_clip: clip_i,
+                                        grab_offset_secs: grab,
+                                    });
+                                }
+
+                                if clip_resp.drag_stopped()
+                                    && let Some(ref drag) = active_drag
+                                    && drag.src_track == track_idx
+                                    && drag.src_clip == clip_i
+                                {
+                                    if let Some(ptr) = ui.input(|i| i.pointer.latest_pos()) {
+                                        let y_off = ptr.y - ruler_rect.bottom();
+                                        let dst_track = ((y_off / TRACK_HEIGHT).floor() as isize)
+                                            .clamp(0, tracks_count as isize - 1)
+                                            as usize;
+                                        let new_start = ((ptr.x - lane_rect.left()) / pps
+                                            - drag.grab_offset_secs)
+                                            .max(0.0);
+                                        pending_moves.push((
+                                            drag.src_track,
+                                            drag.src_clip,
+                                            dst_track,
+                                            new_start,
+                                        ));
+                                    }
+                                    clear_drag = true;
+                                }
+
                                 if clip_resp.hovered()
                                     && let Some(ss) = &source.sprite_sheet
                                     && let Some(ptr) = ui.input(|i| i.pointer.latest_pos())
@@ -656,6 +721,52 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     }
                 });
             }
+            // ── Ghost clip while dragging ───────────────────────────────────────
+            if let Some(ref drag) = active_drag
+                && let Some(ptr) = ui.input(|i| i.pointer.latest_pos())
+            {
+                {
+                    let ghost_dur = state
+                        .timeline
+                        .tracks
+                        .get(drag.src_track)
+                        .and_then(|t| t.clips.get(drag.src_clip))
+                        .and_then(|tc| {
+                            state.clips.get(tc.source_index).map(|s| {
+                                match (tc.in_point, tc.out_point) {
+                                    (Some(i), Some(o)) if o > i => (o - i).as_secs_f32(),
+                                    _ => s.info.duration().as_secs_f32(),
+                                }
+                            })
+                        })
+                        .unwrap_or(1.0);
+
+                    let tracks_top = ruler_rect.bottom();
+                    let y_off = ptr.y - tracks_top;
+                    let dst_ti = ((y_off / TRACK_HEIGHT).floor() as isize)
+                        .clamp(0, tracks_count as isize - 1)
+                        as usize;
+
+                    let ghost_left = ptr.x - drag.grab_offset_secs * pps;
+                    let ghost_top = tracks_top + dst_ti as f32 * TRACK_HEIGHT;
+                    let ghost_rect = egui::Rect::from_min_size(
+                        egui::pos2(ghost_left, ghost_top),
+                        egui::vec2((ghost_dur * pps).max(2.0), TRACK_HEIGHT),
+                    );
+                    ui.painter().rect_filled(
+                        ghost_rect,
+                        4.0,
+                        egui::Color32::from_rgba_premultiplied(100, 160, 220, 100),
+                    );
+                    ui.painter().rect_stroke(
+                        ghost_rect,
+                        4.0,
+                        egui::Stroke::new(1.5, egui::Color32::WHITE),
+                        egui::StrokeKind::Outside,
+                    );
+                }
+            }
+
             // ── Playhead ────────────────────────────────────────────────────────
             let playhead_x = ruler_rect.left() + state.timeline_playhead_secs as f32 * pps;
             let tracks_bottom =
@@ -666,6 +777,27 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 egui::Stroke::new(2.0, egui::Color32::RED),
             );
         }); // end ScrollArea
+
+    // Apply drag state changes.
+    if clear_drag {
+        state.clip_drag = None;
+    }
+    if let Some(nd) = new_drag {
+        state.clip_drag = Some(nd);
+    }
+
+    // Apply timeline clip moves.
+    for (src_track, src_clip, dst_track, new_start_secs) in pending_moves {
+        if src_track == dst_track {
+            if let Some(clip) = state.timeline.tracks[src_track].clips.get_mut(src_clip) {
+                clip.start_on_track = Duration::from_secs_f32(new_start_secs);
+            }
+        } else if src_clip < state.timeline.tracks[src_track].clips.len() {
+            let mut clip = state.timeline.tracks[src_track].clips.remove(src_clip);
+            clip.start_on_track = Duration::from_secs_f32(new_start_secs);
+            state.timeline.tracks[dst_track].clips.push(clip);
+        }
+    }
 
     // Apply drops after the ScrollArea closure to avoid borrow conflicts.
     for (track_idx, clip_idx, start_secs) in pending_clips {

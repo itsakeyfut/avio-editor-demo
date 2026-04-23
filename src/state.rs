@@ -3,6 +3,15 @@ use std::sync::atomic::{AtomicU32, AtomicU64};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
+/// Tracks an in-progress timeline clip drag-to-reposition operation.
+#[derive(Clone)]
+pub struct TimelineClipDrag {
+    pub src_track: usize,
+    pub src_clip: usize,
+    /// Seconds from the clip's left edge to where the user grabbed it.
+    pub grab_offset_secs: f32,
+}
+
 pub struct AppState {
     pub clips: Vec<ImportedClip>,
     pub selected_clip_index: Option<usize>,
@@ -55,6 +64,7 @@ pub struct AppState {
     pub loudness_target: f64,
     pub loudness_tx: mpsc::SyncSender<Option<LoudnessResult>>,
     pub loudness_rx: mpsc::Receiver<Option<LoudnessResult>>,
+    pub clip_drag: Option<TimelineClipDrag>,
 }
 
 impl Default for AppState {
@@ -114,6 +124,7 @@ impl Default for AppState {
             loudness_target: -23.0,
             loudness_tx,
             loudness_rx,
+            clip_drag: None,
         }
     }
 }
