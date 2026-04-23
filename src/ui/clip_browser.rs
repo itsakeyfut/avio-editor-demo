@@ -78,87 +78,150 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
 
     ui.separator();
 
+    const THUMB_W: f32 = 108.0;
+    const THUMB_H: f32 = 61.0; // ~16:9
+    const CARD_W: f32 = THUMB_W;
+
     let mut clicked_idx: Option<usize> = None;
     let mut dbl_clicked_idx: Option<usize> = None;
-    for (idx, clip) in state.clips.iter().enumerate() {
-        let selected = state.selected_clip_index == Some(idx);
-        ui.horizontal(|ui| {
-            match &clip.thumbnail {
-                Some(tex) => {
-                    ui.image(egui::load::SizedTexture::new(
-                        tex.id(),
-                        egui::vec2(48.0, 27.0),
-                    ));
-                }
-                None => {
-                    let (rect, _) =
-                        ui.allocate_exact_size(egui::vec2(48.0, 27.0), egui::Sense::hover());
-                    let icon = if clip.info.primary_video().is_none()
-                        && clip.info.primary_audio().is_some()
-                    {
-                        "\u{1F3B5}"
-                    } else {
-                        "\u{1F3AC}"
-                    };
-                    ui.painter().text(
-                        rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        icon,
-                        egui::FontId::proportional(14.0),
-                        ui.visuals().text_color(),
-                    );
-                }
-            }
-            let name = clip.path.file_name().unwrap_or_default().to_string_lossy();
-            let dnd_id = egui::Id::new(("clip_dnd", idx));
-            let is_dragging = ui.ctx().is_being_dragged(dnd_id);
-            let dnd = ui.dnd_drag_source(dnd_id, idx, |ui| {
-                ui.selectable_label(selected, name.as_ref())
-            });
-            // dnd_drag_source adds CursorIcon::Grab on hover.
-            // Override: show Grabbing only while actively dragging,
-            // Default cursor otherwise.
-            if is_dragging {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-            } else if dnd.response.hovered() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
-            }
-            if dnd.inner.clicked() {
-                clicked_idx = Some(idx);
-            }
-            if dnd.inner.double_clicked() {
-                dbl_clicked_idx = Some(idx);
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(clip.duration_label());
-                if clip.proxy_path.is_some() {
-                    ui.colored_label(egui::Color32::from_rgb(0, 200, 0), "Proxy");
-                } else {
-                    let job_status =
-                        state
-                            .proxy_jobs
-                            .iter()
-                            .find(|j| j.clip_index == idx)
-                            .map(|j| {
-                                j.status
-                                    .lock()
-                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                    .clone()
-                            });
-                    match job_status {
-                        Some(state::ProxyStatus::Running) => {
-                            ui.spinner();
+
+    egui::ScrollArea::vertical()
+        .id_salt("clip_list_scroll")
+        .max_height(240.0)
+        .show(ui, |ui| {
+            egui::Grid::new("clip_cards")
+                .num_columns(2)
+                .spacing([4.0, 4.0])
+                .show(ui, |ui| {
+                    for (idx, clip) in state.clips.iter().enumerate() {
+                        let selected = state.selected_clip_index == Some(idx);
+                        let dnd_id = egui::Id::new(("clip_dnd", idx));
+                        let is_dragging = ui.ctx().is_being_dragged(dnd_id);
+
+                        let card_bg = if selected {
+                            egui::Color32::from_rgba_premultiplied(60, 100, 200, 100)
+                        } else {
+                            egui::Color32::from_rgb(35, 35, 50)
+                        };
+
+                        let dnd = ui.dnd_drag_source(dnd_id, idx, |ui| {
+                            let frame_resp = egui::Frame::new()
+                                .fill(card_bg)
+                                .corner_radius(egui::CornerRadius::same(4))
+                                .inner_margin(egui::Margin::same(3))
+                                .show(ui, |ui| {
+                                    ui.set_max_width(CARD_W);
+                                    // Thumbnail
+                                    match &clip.thumbnail {
+                                        Some(tex) => {
+                                            ui.image(egui::load::SizedTexture::new(
+                                                tex.id(),
+                                                egui::vec2(THUMB_W, THUMB_H),
+                                            ));
+                                        }
+                                        None => {
+                                            let icon = if clip.info.primary_video().is_none()
+                                                && clip.info.primary_audio().is_some()
+                                            {
+                                                "\u{1F3B5}"
+                                            } else {
+                                                "\u{1F3AC}"
+                                            };
+                                            let (rect, _) = ui.allocate_exact_size(
+                                                egui::vec2(THUMB_W, THUMB_H),
+                                                egui::Sense::hover(),
+                                            );
+                                            ui.painter().rect_filled(
+                                                rect,
+                                                4.0,
+                                                egui::Color32::from_rgb(28, 28, 42),
+                                            );
+                                            ui.painter().text(
+                                                rect.center(),
+                                                egui::Align2::CENTER_CENTER,
+                                                icon,
+                                                egui::FontId::proportional(20.0),
+                                                ui.visuals().text_color(),
+                                            );
+                                        }
+                                    }
+                                    // Filename (truncated)
+                                    let name =
+                                        clip.path.file_name().unwrap_or_default().to_string_lossy();
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(name.as_ref()).small(),
+                                        )
+                                        .truncate(),
+                                    );
+                                    // Duration + proxy badge
+                                    ui.horizontal(|ui| {
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(clip.duration_label())
+                                                    .small()
+                                                    .color(egui::Color32::from_gray(160)),
+                                            )
+                                            .truncate(),
+                                        );
+                                        if clip.proxy_path.is_some() {
+                                            ui.colored_label(
+                                                egui::Color32::from_rgb(0, 200, 0),
+                                                egui::RichText::new("P").small(),
+                                            )
+                                            .on_hover_text("Proxy available");
+                                        } else {
+                                            let job = state
+                                                .proxy_jobs
+                                                .iter()
+                                                .find(|j| j.clip_index == idx)
+                                                .map(|j| {
+                                                    j.status
+                                                        .lock()
+                                                        .unwrap_or_else(
+                                                            std::sync::PoisonError::into_inner,
+                                                        )
+                                                        .clone()
+                                                });
+                                            match job {
+                                                Some(state::ProxyStatus::Running) => {
+                                                    ui.spinner();
+                                                }
+                                                Some(state::ProxyStatus::Failed(ref msg)) => {
+                                                    ui.colored_label(egui::Color32::RED, "!")
+                                                        .on_hover_text(msg.as_str());
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    });
+                                });
+                            // Overlay a click-sense region over the whole card
+                            ui.interact(
+                                frame_resp.response.rect,
+                                ui.id().with("card"),
+                                egui::Sense::click(),
+                            )
+                        });
+
+                        if is_dragging {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                        } else if dnd.response.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
                         }
-                        Some(state::ProxyStatus::Failed(ref msg)) => {
-                            ui.colored_label(egui::Color32::RED, "Failed")
-                                .on_hover_text(msg.as_str());
+                        if dnd.inner.clicked() {
+                            clicked_idx = Some(idx);
                         }
-                        _ => {}
+                        if dnd.inner.double_clicked() {
+                            dbl_clicked_idx = Some(idx);
+                        }
+
+                        if idx % 2 == 1 {
+                            ui.end_row();
+                        }
                     }
-                }
-            });
+                });
         });
-    }
     if let Some(idx) = clicked_idx {
         state.selected_clip_index = Some(idx);
     }
