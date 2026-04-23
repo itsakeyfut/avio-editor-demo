@@ -771,10 +771,35 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             let playhead_x = ruler_rect.left() + state.timeline_playhead_secs as f32 * pps;
             let tracks_bottom =
                 ruler_rect.bottom() + TRACK_HEIGHT * state.timeline.tracks.len() as f32;
+            let playhead_color = egui::Color32::from_rgb(220, 60, 60);
             ui.painter().vline(
                 playhead_x,
                 ruler_rect.top()..=tracks_bottom,
-                egui::Stroke::new(2.0, egui::Color32::RED),
+                egui::Stroke::new(2.0, playhead_color),
+            );
+            // Triangular drag handle at the top of the ruler
+            const HANDLE_W: f32 = 7.0;
+            const HANDLE_H: f32 = 11.0;
+            ui.painter().add(egui::Shape::convex_polygon(
+                vec![
+                    egui::pos2(playhead_x, ruler_rect.top() + HANDLE_H),
+                    egui::pos2(playhead_x - HANDLE_W, ruler_rect.top()),
+                    egui::pos2(playhead_x + HANDLE_W, ruler_rect.top()),
+                ],
+                playhead_color,
+                egui::Stroke::NONE,
+            ));
+            // Timecode label just to the right of the handle
+            let t = state.timeline_playhead_secs;
+            let ph_m = (t / 60.0) as u64;
+            let ph_s = (t % 60.0) as u64;
+            let ph_ms = ((t % 1.0) * 1000.0) as u64;
+            ui.painter().text(
+                egui::pos2(playhead_x + HANDLE_W + 3.0, ruler_rect.top() + 2.0),
+                egui::Align2::LEFT_TOP,
+                format!("{ph_m:02}:{ph_s:02}.{ph_ms:03}"),
+                egui::FontId::monospace(9.0),
+                egui::Color32::WHITE,
             );
         }); // end ScrollArea
 
