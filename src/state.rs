@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{AtomicU32, AtomicU64};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
@@ -36,6 +36,9 @@ pub struct AppState {
     pub proxy_active: bool,
     pub pending_proxy_rx: Option<mpsc::Receiver<bool>>,
     pub playback_rate: f64,
+    /// Shared with the cpal audio callback; stores `f64::to_bits(rate)`.
+    /// Audio is muted in the callback at rates other than 1.0.
+    pub cpal_rate: Arc<AtomicU64>,
     pub av_offset_ms: i32,
     pub export: Option<ExportHandle>,
     pub encoder_config: EncoderConfigDraft,
@@ -89,6 +92,7 @@ impl Default for AppState {
             proxy_active: false,
             pending_proxy_rx: None,
             playback_rate: 1.0,
+            cpal_rate: Arc::new(AtomicU64::new(1.0f64.to_bits())),
             av_offset_ms: 0,
             export: None,
             encoder_config: EncoderConfigDraft::default(),

@@ -202,6 +202,10 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
                 .get(idx)
                 .and_then(|c| c.path.parent())
                 .map(|p| p.join("proxies"));
+            state.cpal_rate.store(
+                state.playback_rate.to_bits(),
+                std::sync::atomic::Ordering::Relaxed,
+            );
             let (thread, handle_rx, proxy_rx) = player::spawn_player(
                 path,
                 Arc::clone(&state.frame_handle),
@@ -210,6 +214,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
                 proxy_dir,
                 state.playback_rate,
                 state.av_offset_ms as i64,
+                Arc::clone(&state.cpal_rate),
             );
             state.player_thread = Some(thread);
             state.pending_handle_rx = Some(handle_rx);
