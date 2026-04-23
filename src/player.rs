@@ -5,6 +5,18 @@ use std::time::{Duration, Instant};
 
 use avio::{PlayerHandle, RgbaFrame};
 
+// ── TrackClipData ─────────────────────────────────────────────────────────────
+
+/// Minimal clip description for `spawn_timeline_player`.
+pub struct TrackClipData {
+    pub path: PathBuf,
+    pub start_on_track: Duration,
+    pub in_point: Option<Duration>,
+    pub out_point: Option<Duration>,
+    pub transition: Option<avio::XfadeTransition>,
+    pub transition_duration: Duration,
+}
+
 // ── EguiFrameSink ─────────────────────────────────────────────────────────────
 
 /// `FrameSink` that stores the latest RGBA frame and wakes the egui render loop.
@@ -340,4 +352,97 @@ pub fn spawn_player(
     });
 
     (thread, handle_rx, proxy_rx)
+}
+
+// ── spawn_timeline_player ──────────────────────────────────────────────────────
+
+/// Spawns a background thread running `TimelineRunner::run()` for multi-track playback.
+///
+/// Returns `(thread, handle_rx)`. `handle_rx` delivers the `PlayerHandle` once
+/// the runner is ready (one-shot).
+pub fn spawn_timeline_player(
+    v1: Vec<TrackClipData>,
+    v2: Vec<TrackClipData>,
+    a1: Vec<TrackClipData>,
+    frame_handle: Arc<Mutex<Option<RgbaFrame>>>,
+    ctx: egui::Context,
+    start_pos: Duration,
+    cpal_rate: Arc<AtomicU64>,
+) -> (std::thread::JoinHandle<()>, mpsc::Receiver<PlayerHandle>) {
+    let (handle_tx, handle_rx) = mpsc::sync_channel::<PlayerHandle>(1);
+
+    let thread = std::thread::spawn(move || {
+        let make_clip = |tc: TrackClipData| -> avio::Clip {
+            let mut c = avio::Clip::new(&tc.path).offset(tc.start_on_track);
+            c.in_point = tc.in_point;
+            c.out_point = tc.out_point;
+            if let Some(kind) = tc.transition {
+                c = c.with_transition(kind, tc.transition_duration);
+            }
+            c
+        };
+
+        let v1_clips: Vec<avio::Clip> = v1.into_iter().map(make_clip).collect();
+        let v2_clips: Vec<avio::Clip> = v2.into_iter().map(make_clip).collect();
+        let a1_clips: Vec<avio::Clip> = a1.into_iter().map(make_clip).collect();
+
+        if v1_clips.is_empty() {
+            log::warn!("spawn_timeline_player: no V1 clips");
+            return;
+        }
+
+        let mut builder = avio::Timeline::builder().video_track(v1_clips);
+        if !v2_clips.is_empty() {
+            builder = builder.video_track(v2_clips);
+        }
+        if !a1_clips.is_empty() {
+            builder = builder.audio_track(a1_clips);
+        }
+
+        let timeline = match builder.build() {
+            Ok(t) => t,
+            Err(e) => {
+                log::warn!("Timeline::builder().build() failed: {e}");
+                return;
+            }
+        };
+
+        let (mut runner, handle) = match avio::TimelinePlayer::open(&timeline) {
+            Ok(pair) => pair,
+            Err(e) => {
+                log::warn!("TimelinePlayer::open failed: {e}");
+                return;
+            }
+        };
+
+        let audio_frames = Arc::new(AtomicU64::new(0));
+
+        runner.set_sink(Box::new(EguiFrameSink {
+            frame_handle,
+            ctx: ctx.clone(),
+            audio_frames: Arc::clone(&audio_frames),
+            cpal_rate: Arc::clone(&cpal_rate),
+            frame_count: 0,
+            start_time: None,
+            diag_pts_base_ms: 0.0,
+            diag_frames_base: 0,
+            diag_rate: 1.0,
+        }));
+
+        if start_pos > Duration::ZERO {
+            handle.seek(start_pos);
+        }
+
+        let _ = handle_tx.send(handle.clone());
+        handle.play();
+
+        let _audio_stream = try_start_audio_output(handle.clone(), audio_frames, cpal_rate);
+
+        if let Err(e) = runner.run() {
+            log::warn!("TimelineRunner::run failed: {e}");
+        }
+        ctx.request_repaint();
+    });
+
+    (thread, handle_rx)
 }

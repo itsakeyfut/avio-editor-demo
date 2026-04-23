@@ -7,6 +7,7 @@ pub fn drain_background_jobs(state: &mut AppState, ctx: &egui::Context) {
     drain_gif_jobs(state);
     drain_proxy_jobs(state);
     drain_player_handles(state);
+    drain_timeline_player(state);
     drain_frame(state, ctx);
     drain_analysis_results(state, ctx);
 }
@@ -144,11 +145,40 @@ fn drain_player_handles(state: &mut AppState) {
     }
 }
 
+fn drain_timeline_player(state: &mut AppState) {
+    if let Some(rx) = &state.timeline_pending_handle_rx
+        && let Ok(handle) = rx.try_recv()
+    {
+        state.timeline_player_handle = Some(handle);
+        state.timeline_pending_handle_rx = None;
+    }
+    // Detect EOF: thread finished but handle still held
+    if state
+        .timeline_player_thread
+        .as_ref()
+        .map(|h| h.is_finished())
+        .unwrap_or(false)
+        && state.timeline_player_handle.is_some()
+    {
+        state.stop_timeline_player();
+    }
+}
+
 fn drain_frame(state: &mut AppState, ctx: &egui::Context) {
     if let Ok(mut guard) = state.frame_handle.try_lock()
         && let Some(frame) = guard.take()
     {
-        state.current_pts = Some(frame.pts);
+        // Route PTS to the right player's position indicator
+        if state
+            .timeline_player_thread
+            .as_ref()
+            .map(|h| !h.is_finished())
+            .unwrap_or(false)
+        {
+            state.timeline_playhead_secs = frame.pts.as_secs_f64();
+        } else {
+            state.current_pts = Some(frame.pts);
+        }
         let image = egui::ColorImage::from_rgba_unmultiplied(
             [frame.width as usize, frame.height as usize],
             &frame.data,

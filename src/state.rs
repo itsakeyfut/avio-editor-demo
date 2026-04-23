@@ -39,6 +39,13 @@ pub struct AppState {
     /// Shared with the cpal audio callback; stores `f64::to_bits(rate)`.
     /// Audio is muted in the callback at rates other than 1.0.
     pub cpal_rate: Arc<AtomicU64>,
+    // ── Timeline playback ────────────────────────────────────────────────────
+    /// Current playhead position on the timeline in seconds.
+    pub timeline_playhead_secs: f64,
+    pub timeline_player_thread: Option<std::thread::JoinHandle<()>>,
+    pub timeline_player_handle: Option<avio::PlayerHandle>,
+    pub timeline_pending_handle_rx: Option<mpsc::Receiver<avio::PlayerHandle>>,
+    pub timeline_is_paused: bool,
     pub av_offset_ms: i32,
     pub export: Option<ExportHandle>,
     pub encoder_config: EncoderConfigDraft,
@@ -93,6 +100,11 @@ impl Default for AppState {
             pending_proxy_rx: None,
             playback_rate: 1.0,
             cpal_rate: Arc::new(AtomicU64::new(1.0f64.to_bits())),
+            timeline_playhead_secs: 0.0,
+            timeline_player_thread: None,
+            timeline_player_handle: None,
+            timeline_pending_handle_rx: None,
+            timeline_is_paused: false,
             av_offset_ms: 0,
             export: None,
             encoder_config: EncoderConfigDraft::default(),
@@ -311,6 +323,28 @@ impl Default for TimelineState {
             ],
             pixels_per_second: 60.0,
         }
+    }
+}
+
+impl AppState {
+    pub fn stop_source_monitor_player(&mut self) {
+        if let Some(h) = self.player_handle.take() {
+            h.stop();
+        }
+        self.player_thread = None;
+        self.pending_handle_rx = None;
+        self.pending_proxy_rx = None;
+        self.is_paused = false;
+        self.proxy_active = false;
+    }
+
+    pub fn stop_timeline_player(&mut self) {
+        if let Some(h) = self.timeline_player_handle.take() {
+            h.stop();
+        }
+        self.timeline_player_thread = None;
+        self.timeline_pending_handle_rx = None;
+        self.timeline_is_paused = false;
     }
 }
 

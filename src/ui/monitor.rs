@@ -20,7 +20,15 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
         .unwrap_or(false);
     let is_paused = state.is_paused;
 
-    let ctrl_height = if state.monitor_clip_index.is_some() {
+    let timeline_is_active = state
+        .timeline_player_thread
+        .as_ref()
+        .map(|h| !h.is_finished())
+        .unwrap_or(false);
+
+    let ctrl_height = if timeline_is_active {
+        0.0
+    } else if state.monitor_clip_index.is_some() {
         128.0
     } else {
         36.0
@@ -28,7 +36,17 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
     let available = ui.available_size();
     let video_size = egui::vec2(available.x, (available.y - ctrl_height).max(0.0));
 
-    if state.monitor_clip_index.is_some() {
+    if timeline_is_active {
+        if let Some(tex) = &state.preview_texture {
+            ui.image(egui::load::SizedTexture::new(tex.id(), video_size));
+        } else {
+            ui.allocate_ui(video_size, |ui| {
+                ui.centered_and_justified(|ui| {
+                    ui.label("Loading…");
+                });
+            });
+        }
+    } else if state.monitor_clip_index.is_some() {
         let is_audio_only = state
             .monitor_clip_index
             .and_then(|idx| state.clips.get(idx))
