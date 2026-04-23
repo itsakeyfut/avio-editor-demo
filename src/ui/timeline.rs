@@ -495,6 +495,46 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                 .is_some_and(|d| d.src_track == track_idx && d.src_clip == clip_i);
                             if cr.max.x >= lane_rect.left() && cr.min.x <= lane_rect.right() {
                                 ui.painter().rect_filled(cr, 4.0, clip_color);
+
+                                // Filmstrip thumbnails — V1/V2 only
+                                if track.kind != state::TrackKind::Audio1
+                                    && let Some(ss) = &source.sprite_sheet
+                                {
+                                    let tile_w = TRACK_HEIGHT * (16.0 / 9.0);
+                                    let n_tiles = (cr.width() / tile_w).ceil() as usize + 1;
+                                    let in_secs =
+                                        tc.in_point.map(|p| p.as_secs_f32()).unwrap_or(0.0);
+                                    let first =
+                                        ((lane_rect.left() - cr.left()).max(0.0) / tile_w) as usize;
+                                    let last = (((lane_rect.right() - cr.left()) / tile_w).ceil()
+                                        as usize
+                                        + 1)
+                                    .min(n_tiles);
+                                    let clipped = ui.painter().with_clip_rect(cr);
+                                    for i in first..last {
+                                        let tile_left = cr.left() + i as f32 * tile_w;
+                                        let tile_rect = egui::Rect::from_min_size(
+                                            egui::pos2(tile_left, cr.top()),
+                                            egui::vec2(tile_w, TRACK_HEIGHT),
+                                        );
+                                        let src_t = in_secs + (i as f32 + 0.5) * tile_w / pps;
+                                        let uv =
+                                            ss.sprite_uv(Duration::from_secs_f32(src_t.max(0.0)));
+                                        clipped.image(
+                                            ss.texture.id(),
+                                            tile_rect,
+                                            uv,
+                                            egui::Color32::WHITE,
+                                        );
+                                    }
+                                    // Darkened tint so text stays readable
+                                    ui.painter().rect_filled(
+                                        cr,
+                                        4.0,
+                                        egui::Color32::from_black_alpha(80),
+                                    );
+                                }
+
                                 if is_being_dragged {
                                     ui.painter().rect_filled(
                                         cr,
