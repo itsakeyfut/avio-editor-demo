@@ -5,7 +5,9 @@ use crate::presets::PresetFile;
 use crate::{export, player, state};
 
 pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
-    // Header: "Timeline" heading + Export button aligned right
+    let ctx = ui.ctx().clone();
+
+    // Header: "Timeline" heading + ⚙ settings button + Export button (right-aligned)
     let mut clear_export = false;
     ui.horizontal(|ui| {
         ui.heading("Timeline");
@@ -55,163 +57,182 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 };
                 state.export = Some(export::spawn_export(snapshot, output_path));
             }
+            ui.toggle_value(&mut state.show_export_settings, "⚙")
+                .on_hover_text("Export settings");
         });
     });
 
-    // Encoder settings row: codec selectors, CRF, Save/Load preset
-    ui.horizontal(|ui| {
-        ui.label("Video:");
-        egui::ComboBox::from_id_salt("vcod")
-            .selected_text(state.encoder_config.video_codec.display_name())
-            .show_ui(ui, |ui| {
-                for codec in [
-                    avio::VideoCodec::H264,
-                    avio::VideoCodec::H265,
-                    avio::VideoCodec::Vp9,
-                    avio::VideoCodec::Av1,
-                    avio::VideoCodec::ProRes,
-                ] {
-                    ui.selectable_value(
-                        &mut state.encoder_config.video_codec,
-                        codec,
-                        codec.display_name(),
-                    );
-                }
-            });
-        ui.label("Audio:");
-        egui::ComboBox::from_id_salt("acod")
-            .selected_text(state.encoder_config.audio_codec.display_name())
-            .show_ui(ui, |ui| {
-                for codec in [
-                    avio::AudioCodec::Aac,
-                    avio::AudioCodec::Mp3,
-                    avio::AudioCodec::Opus,
-                    avio::AudioCodec::Flac,
-                ] {
-                    ui.selectable_value(
-                        &mut state.encoder_config.audio_codec,
-                        codec,
-                        codec.display_name(),
-                    );
-                }
-            });
-        ui.label("CRF:");
-        ui.add(egui::Slider::new(&mut state.encoder_config.crf, 0..=51));
-        if ui.button("Save Preset…").clicked()
-            && let Some(path) = rfd::FileDialog::new()
-                .add_filter("Export Preset", &["json"])
-                .set_file_name("preset.json")
-                .save_file()
-        {
-            let pf = PresetFile::from_draft(&state.encoder_config);
-            match std::fs::File::create(&path)
-                .map_err(|e| e.to_string())
-                .and_then(|f| serde_json::to_writer_pretty(f, &pf).map_err(|e| e.to_string()))
-            {
-                Ok(()) => {}
-                Err(e) => log::warn!("save preset failed: {e}"),
-            }
-        }
-        if ui.button("Load Preset…").clicked()
-            && let Some(path) = rfd::FileDialog::new()
-                .add_filter("Export Preset", &["json"])
-                .pick_file()
-        {
-            match std::fs::File::open(&path)
-                .map_err(|e| e.to_string())
-                .and_then(|f| {
-                    serde_json::from_reader::<_, PresetFile>(f).map_err(|e| e.to_string())
-                }) {
-                Ok(pf) => state.encoder_config = pf.to_draft(),
-                Err(e) => log::warn!("load preset failed: {e}"),
-            }
-        }
-    });
-
-    // Filters section
-    egui::CollapsingHeader::new("Filters").show(ui, |ui| {
-        ui.checkbox(&mut state.export_filters.scale_enabled, "Scale output");
-        if state.export_filters.scale_enabled {
+    // ── Export Settings modal ─────────────────────────────────────────────────
+    egui::Window::new("Export Settings")
+        .open(&mut state.show_export_settings)
+        .collapsible(false)
+        .resizable(false)
+        .default_width(380.0)
+        .show(&ctx, |ui| {
+            // Encoder settings: codec selectors, CRF, Save/Load preset
             ui.horizontal(|ui| {
-                ui.add(
-                    egui::DragValue::new(&mut state.export_filters.output_width)
-                        .prefix("W: ")
-                        .suffix(" px"),
-                );
-                ui.add(
-                    egui::DragValue::new(&mut state.export_filters.output_height)
-                        .prefix("H: ")
-                        .suffix(" px"),
-                );
+                ui.label("Video:");
+                egui::ComboBox::from_id_salt("vcod")
+                    .selected_text(state.encoder_config.video_codec.display_name())
+                    .show_ui(ui, |ui| {
+                        for codec in [
+                            avio::VideoCodec::H264,
+                            avio::VideoCodec::H265,
+                            avio::VideoCodec::Vp9,
+                            avio::VideoCodec::Av1,
+                            avio::VideoCodec::ProRes,
+                        ] {
+                            ui.selectable_value(
+                                &mut state.encoder_config.video_codec,
+                                codec,
+                                codec.display_name(),
+                            );
+                        }
+                    });
+                ui.label("Audio:");
+                egui::ComboBox::from_id_salt("acod")
+                    .selected_text(state.encoder_config.audio_codec.display_name())
+                    .show_ui(ui, |ui| {
+                        for codec in [
+                            avio::AudioCodec::Aac,
+                            avio::AudioCodec::Mp3,
+                            avio::AudioCodec::Opus,
+                            avio::AudioCodec::Flac,
+                        ] {
+                            ui.selectable_value(
+                                &mut state.encoder_config.audio_codec,
+                                codec,
+                                codec.display_name(),
+                            );
+                        }
+                    });
             });
-        }
-        // avio API gap: color balance cannot be applied to Timeline::render().
-        // See docs/issue13.md. UI is present for gap documentation purposes.
-        ui.checkbox(
-            &mut state.export_filters.colorbalance_enabled,
-            "Color adjust",
-        )
-        .on_hover_text(
-            "Color balance is not applied during render — avio filter API pending (issue #13)",
-        );
-        if state.export_filters.colorbalance_enabled {
-            ui.add(
-                egui::Slider::new(&mut state.export_filters.brightness, -1.0..=1.0)
-                    .text("Brightness"),
-            );
-            ui.add(
-                egui::Slider::new(&mut state.export_filters.contrast, 0.0..=3.0).text("Contrast"),
-            );
-            ui.add(
-                egui::Slider::new(&mut state.export_filters.saturation, 0.0..=3.0)
-                    .text("Saturation"),
-            );
-        }
-    });
+            ui.horizontal(|ui| {
+                ui.label("CRF:");
+                ui.add(egui::Slider::new(&mut state.encoder_config.crf, 0..=51));
+            });
+            ui.horizontal(|ui| {
+                if ui.button("Save Preset…").clicked()
+                    && let Some(path) = rfd::FileDialog::new()
+                        .add_filter("Export Preset", &["json"])
+                        .set_file_name("preset.json")
+                        .save_file()
+                {
+                    let pf = PresetFile::from_draft(&state.encoder_config);
+                    match std::fs::File::create(&path)
+                        .map_err(|e| e.to_string())
+                        .and_then(|f| {
+                            serde_json::to_writer_pretty(f, &pf).map_err(|e| e.to_string())
+                        }) {
+                        Ok(()) => {}
+                        Err(e) => log::warn!("save preset failed: {e}"),
+                    }
+                }
+                if ui.button("Load Preset…").clicked()
+                    && let Some(path) = rfd::FileDialog::new()
+                        .add_filter("Export Preset", &["json"])
+                        .pick_file()
+                {
+                    match std::fs::File::open(&path)
+                        .map_err(|e| e.to_string())
+                        .and_then(|f| {
+                            serde_json::from_reader::<_, PresetFile>(f).map_err(|e| e.to_string())
+                        }) {
+                        Ok(pf) => state.encoder_config = pf.to_draft(),
+                        Err(e) => log::warn!("load preset failed: {e}"),
+                    }
+                }
+            });
 
-    // Loudness measurement
-    ui.horizontal(|ui| {
-        let can_measure = !state.timeline.tracks[2].clips.is_empty();
-        if ui
-            .add_enabled(can_measure, egui::Button::new("Measure Loudness"))
-            .clicked()
-            && let Some(tc) = state.timeline.tracks[2].clips.first()
-        {
-            let path = state.clips[tc.source_index].path.clone();
-            let tx = state.loudness_tx.clone();
-            tokio::task::spawn_blocking(move || {
-                let result =
-                    avio::LoudnessMeter::new(&path)
-                        .measure()
-                        .ok()
-                        .map(|r| state::LoudnessResult {
-                            integrated_lufs: r.integrated_lufs,
-                            true_peak_dbtp: r.true_peak_dbtp,
-                            lra: r.lra,
-                        });
-                let _ = tx.send(result);
+            ui.separator();
+
+            // Filters section
+            egui::CollapsingHeader::new("Filters").show(ui, |ui| {
+                ui.checkbox(&mut state.export_filters.scale_enabled, "Scale output");
+                if state.export_filters.scale_enabled {
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut state.export_filters.output_width)
+                                .prefix("W: ")
+                                .suffix(" px"),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut state.export_filters.output_height)
+                                .prefix("H: ")
+                                .suffix(" px"),
+                        );
+                    });
+                }
+                // avio API gap: color balance cannot be applied to Timeline::render().
+                // See docs/issue13.md. UI is present for gap documentation purposes.
+                ui.checkbox(
+                    &mut state.export_filters.colorbalance_enabled,
+                    "Color adjust",
+                )
+                .on_hover_text(
+                    "Color balance is not applied during render — avio filter API pending (issue #13)",
+                );
+                if state.export_filters.colorbalance_enabled {
+                    ui.add(
+                        egui::Slider::new(&mut state.export_filters.brightness, -1.0..=1.0)
+                            .text("Brightness"),
+                    );
+                    ui.add(
+                        egui::Slider::new(&mut state.export_filters.contrast, 0.0..=3.0)
+                            .text("Contrast"),
+                    );
+                    ui.add(
+                        egui::Slider::new(&mut state.export_filters.saturation, 0.0..=3.0)
+                            .text("Saturation"),
+                    );
+                }
             });
-        }
-        if let Some(ref r) = state.loudness_result {
-            ui.label(format!(
-                "I: {:.1} LUFS  TP: {:.1} dBTP  LRA: {:.1} LU",
-                r.integrated_lufs, r.true_peak_dbtp, r.lra,
-            ));
-        }
-    });
-    // avio API gap: audio_filter() not available on TimelineBuilder (docs/issue13.md).
-    ui.horizontal(|ui| {
-        ui.checkbox(&mut state.loudness_normalize, "Normalize to target LUFS")
-            .on_hover_text(
-                "Render output is not yet normalized — avio audio filter API pending (issue #13)",
-            );
-        ui.add(
-            egui::DragValue::new(&mut state.loudness_target)
-                .range(-40.0..=-5.0)
-                .speed(0.5)
-                .suffix(" LUFS"),
-        );
-    });
+
+            ui.separator();
+
+            // Loudness measurement
+            ui.horizontal(|ui| {
+                let can_measure = !state.timeline.tracks[2].clips.is_empty();
+                if ui
+                    .add_enabled(can_measure, egui::Button::new("Measure Loudness"))
+                    .clicked()
+                    && let Some(tc) = state.timeline.tracks[2].clips.first()
+                {
+                    let path = state.clips[tc.source_index].path.clone();
+                    let tx = state.loudness_tx.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let result = avio::LoudnessMeter::new(&path)
+                            .measure()
+                            .ok()
+                            .map(|r| state::LoudnessResult {
+                                integrated_lufs: r.integrated_lufs,
+                                true_peak_dbtp: r.true_peak_dbtp,
+                                lra: r.lra,
+                            });
+                        let _ = tx.send(result);
+                    });
+                }
+                if let Some(ref r) = state.loudness_result {
+                    ui.label(format!(
+                        "I: {:.1} LUFS  TP: {:.1} dBTP  LRA: {:.1} LU",
+                        r.integrated_lufs, r.true_peak_dbtp, r.lra,
+                    ));
+                }
+            });
+            // avio API gap: audio_filter() not available on TimelineBuilder (docs/issue13.md).
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut state.loudness_normalize, "Normalize to target LUFS")
+                    .on_hover_text(
+                        "Render output is not yet normalized — avio audio filter API pending (issue #13)",
+                    );
+                ui.add(
+                    egui::DragValue::new(&mut state.loudness_target)
+                        .range(-40.0..=-5.0)
+                        .speed(0.5)
+                        .suffix(" LUFS"),
+                );
+            });
+        });
 
     // Export status row (shown while running or after completion)
     if let Some(handle) = &state.export {
