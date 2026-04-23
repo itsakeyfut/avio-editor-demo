@@ -1,7 +1,8 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::presets::PresetFile;
-use crate::{export, state};
+use crate::{export, player, state};
 
 pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
     // Header: "Timeline" heading + Export button aligned right
@@ -250,6 +251,88 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
         state.export = None;
     }
 
+    // ── Timeline playback controls ────────────────────────────────────────────
+    ui.horizontal(|ui| {
+        let v1_empty = state.timeline.tracks[0].clips.is_empty();
+        let is_playing = state
+            .timeline_player_thread
+            .as_ref()
+            .map(|h| !h.is_finished())
+            .unwrap_or(false);
+        let is_paused = state.timeline_is_paused;
+
+        if ui
+            .add_enabled(!v1_empty && !is_playing, egui::Button::new("▶ Play"))
+            .clicked()
+        {
+            state.stop_source_monitor_player();
+            state.stop_timeline_player();
+            state.monitor_clip_index = None;
+
+            let clips = &state.clips;
+            let make_tcd = |tc: &state::TimelineClip| player::TrackClipData {
+                path: clips[tc.source_index].path.clone(),
+                start_on_track: tc.start_on_track,
+                in_point: tc.in_point,
+                out_point: tc.out_point,
+                transition: tc.transition,
+                transition_duration: tc.transition_duration,
+            };
+            let v1: Vec<_> = state.timeline.tracks[0]
+                .clips
+                .iter()
+                .map(make_tcd)
+                .collect();
+            let v2: Vec<_> = state.timeline.tracks[1]
+                .clips
+                .iter()
+                .map(make_tcd)
+                .collect();
+            let a1: Vec<_> = state.timeline.tracks[2]
+                .clips
+                .iter()
+                .map(make_tcd)
+                .collect();
+
+            let start = Duration::from_secs_f64(state.timeline_playhead_secs.max(0.0));
+            // Timeline always plays at 1×; reset cpal_rate to 1.0
+            state
+                .cpal_rate
+                .store(1.0f64.to_bits(), std::sync::atomic::Ordering::Relaxed);
+            let (thread, handle_rx) = player::spawn_timeline_player(
+                v1,
+                v2,
+                a1,
+                Arc::clone(&state.frame_handle),
+                ui.ctx().clone(),
+                start,
+                Arc::clone(&state.cpal_rate),
+            );
+            state.timeline_player_thread = Some(thread);
+            state.timeline_pending_handle_rx = Some(handle_rx);
+            state.timeline_is_paused = false;
+        }
+
+        if is_playing {
+            let pause_label = if is_paused { "⏵ Resume" } else { "⏸ Pause" };
+            if ui.button(pause_label).clicked()
+                && let Some(h) = &state.timeline_player_handle
+            {
+                if is_paused {
+                    h.play();
+                } else {
+                    h.pause();
+                }
+                state.timeline_is_paused = !is_paused;
+            }
+            if ui.button("⏹ Stop").clicked() {
+                state.stop_timeline_player();
+            }
+        }
+
+        ui.label(format!("{:.2}s", state.timeline_playhead_secs));
+    });
+
     ui.separator();
 
     const TRACK_HEIGHT: f32 = 40.0;
@@ -283,7 +366,20 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
         .id_salt("timeline_scroll")
         .show(ui, |ui| {
             // ── Ruler ──────────────────────────────────────────────────────────
-            let (_, ruler_rect) = ui.allocate_space(egui::vec2(content_width, 24.0));
+            let (ruler_rect, ruler_resp) = ui.allocate_exact_size(
+                egui::vec2(content_width, 24.0),
+                egui::Sense::click_and_drag(),
+            );
+            // Click or drag on ruler to reposition playhead
+            if (ruler_resp.clicked() || ruler_resp.dragged())
+                && let Some(pos) = ruler_resp.interact_pointer_pos()
+            {
+                let secs = ((pos.x - ruler_rect.left()) / pps).max(0.0) as f64;
+                state.timeline_playhead_secs = secs;
+                if let Some(h) = &state.timeline_player_handle {
+                    h.seek(Duration::from_secs_f64(secs));
+                }
+            }
             let painter = ui.painter_at(ruler_rect);
             painter.rect_filled(ruler_rect, 0.0, egui::Color32::from_gray(40));
 
@@ -560,6 +656,15 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     }
                 });
             }
+            // ── Playhead ────────────────────────────────────────────────────────
+            let playhead_x = ruler_rect.left() + state.timeline_playhead_secs as f32 * pps;
+            let tracks_bottom =
+                ruler_rect.bottom() + TRACK_HEIGHT * state.timeline.tracks.len() as f32;
+            ui.painter().vline(
+                playhead_x,
+                ruler_rect.top()..=tracks_bottom,
+                egui::Stroke::new(2.0, egui::Color32::RED),
+            );
         }); // end ScrollArea
 
     // Apply drops after the ScrollArea closure to avoid borrow conflicts.

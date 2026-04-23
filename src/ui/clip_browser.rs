@@ -164,14 +164,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
     }
     if let Some(idx) = dbl_clicked_idx {
         state.selected_clip_index = Some(idx);
-        // Stop any current player and clear all player state.
-        if let Some(handle) = state.player_handle.take() {
-            handle.stop();
-        }
-        state.player_thread = None;
-        state.pending_handle_rx = None;
-        state.pending_proxy_rx = None;
-        state.is_paused = false;
+        state.stop_source_monitor_player();
+        state.stop_timeline_player();
         state.monitor_clip_index = Some(idx);
 
         let has_video = state
