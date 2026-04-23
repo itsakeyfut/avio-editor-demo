@@ -149,7 +149,10 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
         // See docs/issue13.md. UI is present for gap documentation purposes.
         ui.checkbox(
             &mut state.export_filters.colorbalance_enabled,
-            "Color adjust (UI only — avio gap, not applied during render)",
+            "Color adjust",
+        )
+        .on_hover_text(
+            "Color balance is not applied during render — avio filter API pending (issue #13)",
         );
         if state.export_filters.colorbalance_enabled {
             ui.add(
@@ -198,10 +201,10 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
     });
     // avio API gap: audio_filter() not available on TimelineBuilder (docs/issue13.md).
     ui.horizontal(|ui| {
-        ui.checkbox(
-            &mut state.loudness_normalize,
-            "Normalize to (UI only — avio gap, not applied during render)",
-        );
+        ui.checkbox(&mut state.loudness_normalize, "Normalize to target LUFS")
+            .on_hover_text(
+                "Render output is not yet normalized — avio audio filter API pending (issue #13)",
+            );
         ui.add(
             egui::DragValue::new(&mut state.loudness_target)
                 .range(-40.0..=-5.0)
