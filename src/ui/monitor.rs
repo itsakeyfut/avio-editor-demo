@@ -263,6 +263,9 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
                     .clicked()
                 {
                     state.playback_rate = rate;
+                    state
+                        .cpal_rate
+                        .store(rate.to_bits(), std::sync::atomic::Ordering::Relaxed);
                     if let Some(handle) = &state.player_handle {
                         handle.set_rate(rate);
                     }
@@ -361,6 +364,10 @@ fn spawn_and_store(
     start_pos: Option<Duration>,
     proxy_dir: Option<std::path::PathBuf>,
 ) {
+    state.cpal_rate.store(
+        state.playback_rate.to_bits(),
+        std::sync::atomic::Ordering::Relaxed,
+    );
     let (thread, handle_rx, proxy_rx) = player::spawn_player(
         path,
         Arc::clone(&state.frame_handle),
@@ -369,6 +376,7 @@ fn spawn_and_store(
         proxy_dir,
         state.playback_rate,
         state.av_offset_ms as i64,
+        Arc::clone(&state.cpal_rate),
     );
     state.player_thread = Some(thread);
     state.pending_handle_rx = Some(handle_rx);
