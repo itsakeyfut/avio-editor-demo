@@ -65,6 +65,7 @@ pub struct AppState {
     pub loudness_tx: mpsc::SyncSender<Option<LoudnessResult>>,
     pub loudness_rx: mpsc::Receiver<Option<LoudnessResult>>,
     pub clip_drag: Option<TimelineClipDrag>,
+    pub show_export_settings: bool,
 }
 
 impl Default for AppState {
@@ -125,6 +126,7 @@ impl Default for AppState {
             loudness_tx,
             loudness_rx,
             clip_drag: None,
+            show_export_settings: false,
         }
     }
 }
