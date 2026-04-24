@@ -380,6 +380,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             }
             if ui.button("⏹ Stop").clicked() {
                 state.stop_timeline_player();
+                state.timeline_playhead_secs = 0.0;
             }
         }
 
