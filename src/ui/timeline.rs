@@ -368,15 +368,57 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
 
         if is_playing {
             let pause_label = if is_paused { "⏵ Resume" } else { "⏸ Pause" };
-            if ui.button(pause_label).clicked()
-                && let Some(h) = &state.timeline_player_handle
-            {
+            if ui.button(pause_label).clicked() {
                 if is_paused {
-                    h.play();
-                } else {
+                    // Respawn from the current playhead rather than calling h.play().
+                    // seek-while-paused only moves the video decoder; the audio buffer
+                    // stays at the pause point, causing A/V drift on resume.
+                    // A fresh player always starts both streams in sync.
+                    state.stop_timeline_player();
+                    let clips = &state.clips;
+                    let make_tcd = |tc: &state::TimelineClip| player::TrackClipData {
+                        path: clips[tc.source_index].path.clone(),
+                        start_on_track: tc.start_on_track,
+                        in_point: tc.in_point,
+                        out_point: tc.out_point,
+                        transition: tc.transition,
+                        transition_duration: tc.transition_duration,
+                    };
+                    let v1: Vec<_> = state.timeline.tracks[0]
+                        .clips
+                        .iter()
+                        .map(make_tcd)
+                        .collect();
+                    let v2: Vec<_> = state.timeline.tracks[1]
+                        .clips
+                        .iter()
+                        .map(make_tcd)
+                        .collect();
+                    let a1: Vec<_> = state.timeline.tracks[2]
+                        .clips
+                        .iter()
+                        .map(make_tcd)
+                        .collect();
+                    let start = Duration::from_secs_f64(state.timeline_playhead_secs.max(0.0));
+                    state
+                        .cpal_rate
+                        .store(1.0f64.to_bits(), std::sync::atomic::Ordering::Relaxed);
+                    let (thread, handle_rx) = player::spawn_timeline_player(
+                        v1,
+                        v2,
+                        a1,
+                        Arc::clone(&state.frame_handle),
+                        ctx.clone(),
+                        start,
+                        Arc::clone(&state.cpal_rate),
+                    );
+                    state.timeline_player_thread = Some(thread);
+                    state.timeline_pending_handle_rx = Some(handle_rx);
+                    state.timeline_is_paused = false;
+                } else if let Some(h) = &state.timeline_player_handle {
                     h.pause();
+                    state.timeline_is_paused = true;
                 }
-                state.timeline_is_paused = !is_paused;
             }
             if ui.button("⏹ Stop").clicked() {
                 state.stop_timeline_player();
@@ -662,6 +704,19 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                     ui.interact(cr, clip_id, egui::Sense::click_and_drag());
 
                                 if clip_resp.drag_started() {
+                                    // Auto-pause so the user can reposition clips and
+                                    // resume from the exact same playhead frame.
+                                    let is_timeline_playing = state
+                                        .timeline_player_thread
+                                        .as_ref()
+                                        .map(|h| !h.is_finished())
+                                        .unwrap_or(false);
+                                    if is_timeline_playing && !state.timeline_is_paused {
+                                        if let Some(h) = &state.timeline_player_handle {
+                                            h.pause();
+                                        }
+                                        state.timeline_is_paused = true;
+                                    }
                                     let ptr_x = clip_resp
                                         .interact_pointer_pos()
                                         .map(|p| p.x)
