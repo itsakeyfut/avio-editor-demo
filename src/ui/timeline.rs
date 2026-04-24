@@ -26,13 +26,18 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     .save_file()
             {
                 let clips = &state.clips;
-                let make_clip = |tc: &state::TimelineClip| export::ExportClip {
-                    path: clips[tc.source_index].path.clone(),
-                    start_on_track: tc.start_on_track,
-                    in_point: tc.in_point,
-                    out_point: tc.out_point,
-                    transition: tc.transition,
-                    transition_duration: tc.transition_duration,
+                let make_clip = |tc: &state::TimelineClip| {
+                    let src = &clips[tc.source_index];
+                    export::ExportClip {
+                        path: src.path.clone(),
+                        start_on_track: tc.start_on_track,
+                        in_point: tc.in_point,
+                        out_point: tc.out_point,
+                        transition: tc.transition,
+                        transition_duration: tc.transition_duration,
+                        source_duration: src.info.duration(),
+                        fps: src.info.frame_rate().unwrap_or(30.0),
+                    }
                 };
                 let snapshot = export::ExportSnapshot {
                     v1_clips: state.timeline.tracks[0]
@@ -94,6 +99,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     .selected_text(state.encoder_config.audio_codec.display_name())
                     .show_ui(ui, |ui| {
                         for codec in [
+                            avio::AudioCodec::Pcm,
                             avio::AudioCodec::Aac,
                             avio::AudioCodec::Mp3,
                             avio::AudioCodec::Opus,
@@ -234,29 +240,52 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             });
         });
 
-    // Export status row (shown while running or after completion)
+    // Export progress window (floating, centered) — shown while running.
+    // Done / Failed states remain as an inline status row below.
     if let Some(handle) = &state.export {
-        let status = handle.status.lock().unwrap().clone();
+        let status = handle
+            .status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if matches!(status, state::ExportStatus::Running) {
+            let pct = f32::from_bits(handle.progress.load(std::sync::atomic::Ordering::Relaxed));
+            egui::Window::new("Exporting…")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .show(&ctx, |ui| {
+                    ui.set_min_width(300.0);
+                    let fraction = (pct / 100.0).clamp(0.0, 1.0);
+                    let bar = egui::ProgressBar::new(fraction)
+                        .desired_width(300.0);
+                    let bar = if pct > 0.0 {
+                        bar.text(format!("{:.0}%", pct))
+                    } else {
+                        bar.text("Encoding…")
+                    };
+                    ui.add(bar);
+                });
+            // Keep the UI updating while the background task runs.
+            ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        }
+    }
+
+    // Export completion / failure row
+    if let Some(handle) = &state.export {
+        let status = handle
+            .status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         match status {
-            state::ExportStatus::Running => {
-                let pct =
-                    f32::from_bits(handle.progress.load(std::sync::atomic::Ordering::Relaxed))
-                        / 100.0;
-                let bar = egui::ProgressBar::new(pct).animate(pct == 0.0);
-                let bar = if pct > 0.0 {
-                    bar.text(format!("{:.0}%", pct * 100.0))
-                } else {
-                    bar.text("Exporting…")
-                };
-                ui.add(bar);
-            }
             state::ExportStatus::Done(path) => {
                 ui.horizontal(|ui| {
                     ui.colored_label(
                         egui::Color32::GREEN,
                         format!("Exported: {}", path.display()),
                     );
-                    if ui.button("Clear").clicked() {
+                    if ui.button("✕").clicked() {
                         clear_export = true;
                     }
                 });
@@ -264,11 +293,12 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             state::ExportStatus::Failed(msg) => {
                 ui.horizontal(|ui| {
                     ui.colored_label(egui::Color32::RED, format!("Export failed: {msg}"));
-                    if ui.button("Dismiss").clicked() {
+                    if ui.button("✕").clicked() {
                         clear_export = true;
                     }
                 });
             }
+            state::ExportStatus::Running => {}
         }
     }
     if clear_export {

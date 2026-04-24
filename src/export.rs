@@ -13,6 +13,10 @@ pub struct ExportClip {
     pub out_point: Option<Duration>,
     pub transition: Option<avio::XfadeTransition>,
     pub transition_duration: Duration,
+    /// Full source duration from MediaInfo — used to estimate progress when out_point is unset.
+    pub source_duration: Duration,
+    /// Frame rate of the source clip — used to estimate total_frames for progress.
+    pub fps: f64,
 }
 
 /// Send-safe snapshot of all timeline tracks, constructed on the main thread
@@ -75,6 +79,23 @@ fn build_and_render(
     output: &std::path::Path,
     progress: &Arc<AtomicU32>,
 ) -> Result<(), String> {
+    // Compute the estimate before snapshot fields are moved into clips_to_avio.
+    // Used as a fallback when avio cannot determine total_frames (clips without out_point).
+    let total_frames_estimate: Option<u64> = {
+        let fps = snapshot.v1_clips.first().map(|c| c.fps).unwrap_or(30.0);
+        let total_dur: Duration = snapshot
+            .v1_clips
+            .iter()
+            .map(|c| {
+                let end = c.out_point.unwrap_or(c.source_duration);
+                let start = c.in_point.unwrap_or(Duration::ZERO);
+                end.saturating_sub(start)
+            })
+            .sum();
+        let frames = (total_dur.as_secs_f64() * fps).round() as u64;
+        if frames > 0 { Some(frames) } else { None }
+    };
+
     let v1 = clips_to_avio(snapshot.v1_clips);
     let v2 = clips_to_avio(snapshot.v2_clips);
     let a1 = clips_to_avio(snapshot.a1_clips);
@@ -84,6 +105,10 @@ fn build_and_render(
     }
 
     let config = snapshot.encoder_config.to_encoder_config();
+
+    // When A1 has no clips, mirror V1 so the video clips' embedded audio is exported.
+    let effective_a1 = if a1.is_empty() { v1.clone() } else { a1 };
+
     let mut builder = avio::Timeline::builder().video_track(v1);
 
     if snapshot.export_filters.scale_enabled {
@@ -106,8 +131,8 @@ fn build_and_render(
     if !v2.is_empty() {
         builder = builder.video_track(v2);
     }
-    if !a1.is_empty() {
-        builder = builder.audio_track(a1);
+    if !effective_a1.is_empty() {
+        builder = builder.audio_track(effective_a1);
     }
 
     let timeline = builder.build().map_err(|e| e.to_string())?;
@@ -115,9 +140,13 @@ fn build_and_render(
     let progress_ref = Arc::clone(progress);
     timeline
         .render_with_progress(output, config, move |p| {
-            if let Some(pct) = p.percent() {
-                progress_ref.store((pct as f32).to_bits(), Ordering::Relaxed);
-            }
+            let pct = p.percent().unwrap_or_else(|| {
+                total_frames_estimate
+                    .filter(|&total| total > 0)
+                    .map(|total| (p.frames_processed as f64 / total as f64 * 100.0).min(99.0))
+                    .unwrap_or(0.0)
+            });
+            progress_ref.store((pct as f32).to_bits(), Ordering::Relaxed);
             true
         })
         .map_err(|e| e.to_string())?;
