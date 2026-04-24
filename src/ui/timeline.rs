@@ -26,13 +26,18 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     .save_file()
             {
                 let clips = &state.clips;
-                let make_clip = |tc: &state::TimelineClip| export::ExportClip {
-                    path: clips[tc.source_index].path.clone(),
-                    start_on_track: tc.start_on_track,
-                    in_point: tc.in_point,
-                    out_point: tc.out_point,
-                    transition: tc.transition,
-                    transition_duration: tc.transition_duration,
+                let make_clip = |tc: &state::TimelineClip| {
+                    let src = &clips[tc.source_index];
+                    export::ExportClip {
+                        path: src.path.clone(),
+                        start_on_track: tc.start_on_track,
+                        in_point: tc.in_point,
+                        out_point: tc.out_point,
+                        transition: tc.transition,
+                        transition_duration: tc.transition_duration,
+                        source_duration: src.info.duration(),
+                        fps: src.info.frame_rate().unwrap_or(30.0),
+                    }
                 };
                 let snapshot = export::ExportSnapshot {
                     v1_clips: state.timeline.tracks[0]
@@ -253,7 +258,6 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     ui.set_min_width(300.0);
                     let fraction = (pct / 100.0).clamp(0.0, 1.0);
                     let bar = egui::ProgressBar::new(fraction)
-                        .animate(true)
                         .desired_width(300.0);
                     let bar = if pct > 0.0 {
                         bar.text(format!("{:.0}%", pct))
