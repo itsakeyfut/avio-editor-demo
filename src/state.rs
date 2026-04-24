@@ -270,10 +270,7 @@ impl Default for EncoderConfigDraft {
     fn default() -> Self {
         Self {
             video_codec: avio::VideoCodec::H264,
-            // PCM (pcm_s16le) has frame_size=0 so push_audio_frame can send any
-            // number of samples without triggering the avio FIFO gap that causes
-            // "nb_samples > frame_size" errors with AAC/FLAC/ALAC.
-            audio_codec: avio::AudioCodec::Pcm,
+            audio_codec: avio::AudioCodec::Aac,
             crf: 23,
         }
     }
