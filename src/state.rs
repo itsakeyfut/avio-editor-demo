@@ -66,6 +66,7 @@ pub struct AppState {
     pub loudness_rx: mpsc::Receiver<Option<LoudnessResult>>,
     pub clip_drag: Option<TimelineClipDrag>,
     pub show_export_settings: bool,
+    pub theme_preference: egui::ThemePreference,
 }
 
 impl Default for AppState {
@@ -127,6 +128,7 @@ impl Default for AppState {
             loudness_rx,
             clip_drag: None,
             show_export_settings: false,
+            theme_preference: egui::ThemePreference::System,
         }
     }
 }

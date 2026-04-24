@@ -1,6 +1,8 @@
 /// Studio-grade dark theme for avio-editor-demo.
 ///
 /// Call once from the eframe CreationContext before the first frame.
+/// Stores the custom dark visuals in the Dark theme slot so that switching
+/// between Dark / Light / System all works correctly via `ctx.set_theme()`.
 pub fn apply(ctx: &egui::Context) {
     let mut v = egui::Visuals::dark();
 
@@ -69,23 +71,24 @@ pub fn apply(ctx: &egui::Context) {
         color: egui::Color32::from_black_alpha(120),
     };
 
-    ctx.set_visuals(v);
+    // Store in the Dark slot so ctx.set_theme(Dark/System) always applies these visuals.
+    ctx.set_visuals_of(egui::Theme::Dark, v);
 
-    // Slightly more comfortable spacing and font sizes
-    let mut style = (*ctx.style()).clone();
-    style.text_styles.insert(
-        egui::TextStyle::Body,
-        egui::FontId::new(13.0, egui::FontFamily::Proportional),
-    );
-    style.text_styles.insert(
-        egui::TextStyle::Button,
-        egui::FontId::new(13.0, egui::FontFamily::Proportional),
-    );
-    style.text_styles.insert(
-        egui::TextStyle::Small,
-        egui::FontId::new(11.0, egui::FontFamily::Proportional),
-    );
-    style.spacing.button_padding = egui::vec2(8.0, 4.0);
-    style.spacing.item_spacing = egui::vec2(8.0, 5.0);
-    ctx.set_style(style);
+    // Apply comfortable spacing and font sizes to both themes.
+    ctx.all_styles_mut(|style| {
+        style.text_styles.insert(
+            egui::TextStyle::Body,
+            egui::FontId::new(13.0, egui::FontFamily::Proportional),
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Button,
+            egui::FontId::new(13.0, egui::FontFamily::Proportional),
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Small,
+            egui::FontId::new(11.0, egui::FontFamily::Proportional),
+        );
+        style.spacing.button_padding = egui::vec2(8.0, 4.0);
+        style.spacing.item_spacing = egui::vec2(8.0, 5.0);
+    });
 }

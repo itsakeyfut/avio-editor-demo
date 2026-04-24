@@ -40,11 +40,30 @@ impl eframe::App for AvioEditorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ui::drain_background_jobs(&mut self.state, ctx);
 
+        // Apply the user-selected theme every frame.
+        ctx.set_theme(self.state.theme_preference);
+
         // 1. Top menu bar (must come before all other panels)
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |_ui| {});
                 ui.menu_button("Export", |_ui| {});
+                ui.menu_button("View", |ui| {
+                    ui.label("Theme");
+                    ui.separator();
+                    for (pref, label) in [
+                        (egui::ThemePreference::System, "System"),
+                        (egui::ThemePreference::Dark, "Dark"),
+                        (egui::ThemePreference::Light, "Light"),
+                    ] {
+                        if ui
+                            .radio_value(&mut self.state.theme_preference, pref, label)
+                            .clicked()
+                        {
+                            ui.close();
+                        }
+                    }
+                });
             });
         });
 
