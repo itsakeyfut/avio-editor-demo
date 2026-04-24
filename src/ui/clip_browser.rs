@@ -105,7 +105,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
                         };
 
                         let dnd = ui.dnd_drag_source(dnd_id, idx, |ui| {
-                            let frame_resp = egui::Frame::new()
+                            egui::Frame::new()
                                 .fill(card_bg)
                                 .corner_radius(egui::CornerRadius::same(4))
                                 .inner_margin(egui::Margin::same(3))
@@ -196,12 +196,6 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
                                         }
                                     });
                                 });
-                            // dnd_id (not ui.id()) avoids layer-ID collision between DnD ghost and background
-                            ui.interact(
-                                frame_resp.response.rect,
-                                dnd_id.with("card"),
-                                egui::Sense::click(),
-                            )
                         });
 
                         if is_dragging {
@@ -209,10 +203,21 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
                         } else if dnd.response.hovered() {
                             ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
                         }
-                        if dnd.inner.clicked() {
+
+                        // Register click sense OUTSIDE the dnd closure so it sits on top of
+                        // the drag widget in egui's hit-test order. When a Sense::drag()-only
+                        // widget is on top, egui suppresses the click widget below it — placing
+                        // the click widget after the drag widget reverses the priority.
+                        // Using a stable per-card ID avoids the layer-hash collision from #82.
+                        let card_response = ui.interact(
+                            dnd.response.rect,
+                            egui::Id::new(("clip_card_click", idx)),
+                            egui::Sense::click(),
+                        );
+                        if card_response.clicked() {
                             clicked_idx = Some(idx);
                         }
-                        if dnd.inner.double_clicked() {
+                        if card_response.double_clicked() {
                             dbl_clicked_idx = Some(idx);
                         }
 
