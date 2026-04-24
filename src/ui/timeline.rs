@@ -94,6 +94,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     .selected_text(state.encoder_config.audio_codec.display_name())
                     .show_ui(ui, |ui| {
                         for codec in [
+                            avio::AudioCodec::Pcm,
                             avio::AudioCodec::Aac,
                             avio::AudioCodec::Mp3,
                             avio::AudioCodec::Opus,
