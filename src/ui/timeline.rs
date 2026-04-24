@@ -370,50 +370,48 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             let pause_label = if is_paused { "⏵ Resume" } else { "⏸ Pause" };
             if ui.button(pause_label).clicked() {
                 if is_paused {
-                    // Respawn from the current playhead rather than calling h.play().
-                    // seek-while-paused only moves the video decoder; the audio buffer
-                    // stays at the pause point, causing A/V drift on resume.
-                    // A fresh player always starts both streams in sync.
-                    state.stop_timeline_player();
-                    let clips = &state.clips;
-                    let make_tcd = |tc: &state::TimelineClip| player::TrackClipData {
-                        path: clips[tc.source_index].path.clone(),
-                        start_on_track: tc.start_on_track,
-                        in_point: tc.in_point,
-                        out_point: tc.out_point,
-                        transition: tc.transition,
-                        transition_duration: tc.transition_duration,
-                    };
-                    let v1: Vec<_> = state.timeline.tracks[0]
-                        .clips
-                        .iter()
-                        .map(make_tcd)
-                        .collect();
-                    let v2: Vec<_> = state.timeline.tracks[1]
-                        .clips
-                        .iter()
-                        .map(make_tcd)
-                        .collect();
-                    let a1: Vec<_> = state.timeline.tracks[2]
-                        .clips
-                        .iter()
-                        .map(make_tcd)
-                        .collect();
-                    let start = Duration::from_secs_f64(state.timeline_playhead_secs.max(0.0));
-                    state
-                        .cpal_rate
-                        .store(1.0f64.to_bits(), std::sync::atomic::Ordering::Relaxed);
-                    let (thread, handle_rx) = player::spawn_timeline_player(
-                        v1,
-                        v2,
-                        a1,
-                        Arc::clone(&state.frame_handle),
-                        ctx.clone(),
-                        start,
-                        Arc::clone(&state.cpal_rate),
-                    );
-                    state.timeline_player_thread = Some(thread);
-                    state.timeline_pending_handle_rx = Some(handle_rx);
+                    if state.clips_moved_while_paused {
+                        // One or more clips were repositioned while paused.
+                        // Send the updated layout to the running runner so it
+                        // updates positions in place and seeks to the last known
+                        // PTS — no teardown needed.
+                        let clips = &state.clips;
+                        let make_tcd = |tc: &state::TimelineClip| player::TrackClipData {
+                            path: clips[tc.source_index].path.clone(),
+                            start_on_track: tc.start_on_track,
+                            in_point: tc.in_point,
+                            out_point: tc.out_point,
+                            transition: tc.transition,
+                            transition_duration: tc.transition_duration,
+                        };
+                        let v1: Vec<_> = state.timeline.tracks[0]
+                            .clips
+                            .iter()
+                            .map(make_tcd)
+                            .collect();
+                        let v2: Vec<_> = state.timeline.tracks[1]
+                            .clips
+                            .iter()
+                            .map(make_tcd)
+                            .collect();
+                        let a1: Vec<_> = state.timeline.tracks[2]
+                            .clips
+                            .iter()
+                            .map(make_tcd)
+                            .collect();
+                        match player::build_timeline(v1, v2, a1) {
+                            Ok(tl) => {
+                                if let Some(h) = &state.timeline_player_handle {
+                                    h.update_timeline(tl);
+                                }
+                            }
+                            Err(e) => log::warn!("build_timeline failed: {e}"),
+                        }
+                        state.clips_moved_while_paused = false;
+                    }
+                    if let Some(h) = &state.timeline_player_handle {
+                        h.play();
+                    }
                     state.timeline_is_paused = false;
                 } else if let Some(h) = &state.timeline_player_handle {
                     h.pause();
@@ -462,6 +460,10 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
     let active_drag = state.clip_drag.clone();
     let mut new_drag: Option<state::TimelineClipDrag> = None;
     let mut clear_drag = false;
+    // Set to true when a clip is dropped to a new position while the player is
+    // paused. Resume must respawn the player so TimelineRunner gets the updated
+    // clip layout; h.play() alone cannot update the runner's internal state.
+    let mut moved_while_paused = false;
     let tracks_count = state.timeline.tracks.len();
 
     egui::ScrollArea::horizontal()
@@ -750,6 +752,9 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                             dst_track,
                                             new_start,
                                         ));
+                                        if state.timeline_is_paused {
+                                            moved_while_paused = true;
+                                        }
                                     }
                                     clear_drag = true;
                                 }
@@ -958,6 +963,9 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
     }
     if let Some(nd) = new_drag {
         state.clip_drag = Some(nd);
+    }
+    if moved_while_paused {
+        state.clips_moved_while_paused = true;
     }
 
     // Apply timeline clip moves.
