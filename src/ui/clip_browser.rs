@@ -196,10 +196,10 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
                                         }
                                     });
                                 });
-                            // Overlay a click-sense region over the whole card
+                            // dnd_id (not ui.id()) avoids layer-ID collision between DnD ghost and background
                             ui.interact(
                                 frame_resp.response.rect,
-                                ui.id().with("card"),
+                                dnd_id.with("card"),
                                 egui::Sense::click(),
                             )
                         });
