@@ -257,8 +257,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 .show(&ctx, |ui| {
                     ui.set_min_width(300.0);
                     let fraction = (pct / 100.0).clamp(0.0, 1.0);
-                    let bar = egui::ProgressBar::new(fraction)
-                        .desired_width(300.0);
+                    let bar = egui::ProgressBar::new(fraction).desired_width(300.0);
                     let bar = if pct > 0.0 {
                         bar.text(format!("{:.0}%", pct))
                     } else {
