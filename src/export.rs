@@ -84,6 +84,10 @@ fn build_and_render(
     }
 
     let config = snapshot.encoder_config.to_encoder_config();
+
+    // When A1 has no clips, mirror V1 so the video clips' embedded audio is exported.
+    let effective_a1 = if a1.is_empty() { v1.clone() } else { a1 };
+
     let mut builder = avio::Timeline::builder().video_track(v1);
 
     if snapshot.export_filters.scale_enabled {
@@ -106,8 +110,8 @@ fn build_and_render(
     if !v2.is_empty() {
         builder = builder.video_track(v2);
     }
-    if !a1.is_empty() {
-        builder = builder.audio_track(a1);
+    if !effective_a1.is_empty() {
+        builder = builder.audio_track(effective_a1);
     }
 
     let timeline = builder.build().map_err(|e| e.to_string())?;

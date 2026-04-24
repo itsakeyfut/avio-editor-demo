@@ -270,7 +270,10 @@ impl Default for EncoderConfigDraft {
     fn default() -> Self {
         Self {
             video_codec: avio::VideoCodec::H264,
-            audio_codec: avio::AudioCodec::Aac,
+            // FLAC avoids the avio AAC FIFO gap (push_audio_frame sends frames
+            // without normalizing to 1024 samples; FLAC's frame_size=4096 > resampled
+            // output so the nb_samples > frame_size error never fires).
+            audio_codec: avio::AudioCodec::Flac,
             crf: 23,
         }
     }
