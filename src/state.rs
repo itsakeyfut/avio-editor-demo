@@ -55,6 +55,10 @@ pub struct AppState {
     pub timeline_player_handle: Option<avio::PlayerHandle>,
     pub timeline_pending_handle_rx: Option<mpsc::Receiver<avio::PlayerHandle>>,
     pub timeline_is_paused: bool,
+    /// Set when one or more timeline clips are moved while the player is paused.
+    /// Causes Resume to respawn the player (which rebuilds clip positions) instead
+    /// of calling h.play() on the stale runner.
+    pub clips_moved_while_paused: bool,
     pub av_offset_ms: i32,
     pub export: Option<ExportHandle>,
     pub encoder_config: EncoderConfigDraft,
@@ -117,6 +121,7 @@ impl Default for AppState {
             timeline_player_handle: None,
             timeline_pending_handle_rx: None,
             timeline_is_paused: false,
+            clips_moved_while_paused: false,
             av_offset_ms: 0,
             export: None,
             encoder_config: EncoderConfigDraft::default(),
@@ -360,6 +365,7 @@ impl AppState {
         self.timeline_player_thread = None;
         self.timeline_pending_handle_rx = None;
         self.timeline_is_paused = false;
+        self.clips_moved_while_paused = false;
     }
 }
 
