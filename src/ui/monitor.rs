@@ -252,6 +252,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
             }
             if ui.button("⏹ Stop").clicked() {
                 stop_player(state);
+                state.monitor_clip_index = None;
+                state.seek_pos_secs = 0.0;
             }
         } else if let Some(idx) = state.monitor_clip_index {
             let has_media = state
