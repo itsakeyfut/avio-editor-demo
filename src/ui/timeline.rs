@@ -314,6 +314,32 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             || ui.input_mut(|i| {
                 i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Z)
             }));
+    // egui-winit converts Ctrl+C → Event::Copy and Ctrl+V → Event::Paste on Windows,
+    // so consume_key(Ctrl, C/V) never fires; check the clipboard events first.
+    let do_copy = !wants_kb
+        && ui.input_mut(|i| {
+            if let Some(pos) = i.events.iter().position(|e| matches!(e, egui::Event::Copy)) {
+                i.events.remove(pos);
+                true
+            } else {
+                i.consume_key(egui::Modifiers::CTRL, egui::Key::C)
+            }
+        });
+    let do_paste = !wants_kb
+        && ui.input_mut(|i| {
+            if let Some(pos) = i
+                .events
+                .iter()
+                .position(|e| matches!(e, egui::Event::Paste(_)))
+            {
+                i.events.remove(pos);
+                true
+            } else {
+                i.consume_key(egui::Modifiers::CTRL, egui::Key::V)
+            }
+        });
+    let do_duplicate =
+        !wants_kb && ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::D));
 
     ui.horizontal(|ui| {
         let v1_empty = state.timeline.tracks[0].clips.is_empty();
@@ -483,6 +509,10 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
     #[allow(clippy::type_complexity)]
     let mut pending_trims: Vec<(usize, usize, Option<Duration>, Option<Duration>, Duration)> =
         Vec::new();
+    // (track_idx, clip) — clips to insert at end of their track (paste / duplicate)
+    let mut pending_inserts: Vec<(usize, state::TimelineClip)> = Vec::new();
+    // Set on clip left-click; applied after the ScrollArea.
+    let mut new_selection: Option<(usize, usize)> = None;
     let active_drag = state.clip_drag.clone();
     let active_trim = state.clip_trim.clone();
     let mut new_drag: Option<state::TimelineClipDrag> = None;
@@ -1067,6 +1097,21 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                         }
                                     });
                                 }
+
+                                // White outline on the selected clip.
+                                if state.timeline_selected == Some((track_idx, clip_i)) {
+                                    ui.painter().rect_stroke(
+                                        cr,
+                                        4.0,
+                                        egui::Stroke::new(2.0, egui::Color32::WHITE),
+                                        egui::StrokeKind::Outside,
+                                    );
+                                }
+
+                                // Left-click (not drag) selects this clip.
+                                if clip_resp.clicked() {
+                                    new_selection = Some((track_idx, clip_i));
+                                }
                             }
                         }
                     }
@@ -1181,6 +1226,69 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
         applied_undo_redo = true;
     }
 
+    // Apply timeline selection change.
+    if let Some(sel) = new_selection {
+        state.timeline_selected = Some(sel);
+    }
+
+    // Copy selected clip to clipboard (Ctrl+C).
+    if do_copy
+        && let Some((ti, ci)) = state.timeline_selected
+        && let Some(clip) = state
+            .timeline
+            .tracks
+            .get(ti)
+            .and_then(|t| t.clips.get(ci))
+            .cloned()
+    {
+        state.timeline_clipboard = Some((ti, clip));
+    }
+
+    // Populate paste / duplicate inserts (Ctrl+V / Ctrl+D).
+    if do_paste && let Some((src_track, clip)) = state.timeline_clipboard.clone() {
+        let src_dur = state
+            .clips
+            .get(clip.source_index)
+            .map(|s| s.info.duration())
+            .unwrap_or(Duration::ZERO);
+        let eff_dur = match (clip.in_point, clip.out_point) {
+            (Some(i), Some(o)) if o > i => o - i,
+            (None, Some(o)) => o,
+            (Some(i), None) => src_dur.saturating_sub(i),
+            _ => src_dur,
+        };
+        let paste_start = clip.start_on_track + eff_dur;
+        let mut new_clip = clip;
+        new_clip.start_on_track = paste_start;
+        pending_inserts.push((src_track, new_clip));
+    }
+    if do_duplicate
+        && let Some((ti, ci)) = state.timeline_selected
+        && let Some(clip) = state
+            .timeline
+            .tracks
+            .get(ti)
+            .and_then(|t| t.clips.get(ci))
+            .cloned()
+    {
+        let src_dur = state
+            .clips
+            .get(clip.source_index)
+            .map(|s| s.info.duration())
+            .unwrap_or(Duration::ZERO);
+        let eff_dur = match (clip.in_point, clip.out_point) {
+            (Some(i), Some(o)) if o > i => o - i,
+            (None, Some(o)) => o,
+            (Some(i), None) => src_dur.saturating_sub(i),
+            _ => src_dur,
+        };
+        let dup_start = clip.start_on_track + eff_dur;
+        let mut new_clip = clip;
+        new_clip.start_on_track = dup_start;
+        new_clip.transition = None;
+        pending_inserts.push((ti, new_clip));
+    }
+
     // Snapshot all 3 tracks before applying any pending ops.
     let tracks_before: [Vec<state::TimelineClip>; 3] =
         std::array::from_fn(|i| state.timeline.tracks[i].clips.clone());
@@ -1191,6 +1299,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
     let had_transitions = !pending_transitions.is_empty();
     let had_ripple_delete = pending_deletes.iter().any(|d| d.2);
     let had_deletes = !pending_deletes.is_empty();
+    let had_paste = !pending_inserts.is_empty() && do_paste;
+    let had_duplicate = !pending_inserts.is_empty() && do_duplicate;
 
     // Apply drag / trim state changes.
     if clear_drag {
@@ -1229,6 +1339,9 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             clip.start_on_track = Duration::from_secs_f32(new_start_secs);
             state.timeline.tracks[dst_track].clips.push(clip);
         }
+    }
+    if had_moves {
+        state.timeline_selected = None;
     }
 
     // Apply drops after the ScrollArea closure to avoid borrow conflicts.
@@ -1281,6 +1394,14 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 }
             }
         }
+    }
+    if had_deletes {
+        state.timeline_selected = None;
+    }
+
+    // Apply paste / duplicate inserts.
+    for (ti, clip) in pending_inserts {
+        state.timeline.tracks[ti].clips.push(clip);
     }
 
     // Split clips at playhead (C key or "✂ Split" button).
@@ -1357,6 +1478,10 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             "Trim Clip"
         } else if had_transitions {
             "Set Transition"
+        } else if had_paste {
+            "Paste Clip"
+        } else if had_duplicate {
+            "Duplicate Clip"
         } else if had_clips {
             "Add Clip"
         } else {
