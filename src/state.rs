@@ -3,6 +3,21 @@ use std::sync::atomic::{AtomicU32, AtomicU64};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
+/// Which edge of a clip is being trimmed.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TrimEdge {
+    Left,
+    Right,
+}
+
+/// Tracks an in-progress timeline clip edge-trim operation.
+#[derive(Clone, Debug)]
+pub struct TimelineClipTrimDrag {
+    pub track_idx: usize,
+    pub clip_idx: usize,
+    pub edge: TrimEdge,
+}
+
 /// Tracks an in-progress timeline clip drag-to-reposition operation.
 #[derive(Clone)]
 pub struct TimelineClipDrag {
@@ -69,6 +84,7 @@ pub struct AppState {
     pub loudness_tx: mpsc::SyncSender<Option<LoudnessResult>>,
     pub loudness_rx: mpsc::Receiver<Option<LoudnessResult>>,
     pub clip_drag: Option<TimelineClipDrag>,
+    pub clip_trim: Option<TimelineClipTrimDrag>,
     pub show_export_settings: bool,
     pub theme_preference: egui::ThemePreference,
 }
@@ -132,6 +148,7 @@ impl Default for AppState {
             loudness_tx,
             loudness_rx,
             clip_drag: None,
+            clip_trim: None,
             show_export_settings: false,
             theme_preference: egui::ThemePreference::System,
         }
