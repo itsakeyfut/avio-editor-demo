@@ -305,6 +305,9 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
     }
 
     // ── Timeline playback controls ────────────────────────────────────────────
+    let mut do_split = !ui.ctx().wants_keyboard_input()
+        && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::X));
+
     ui.horizontal(|ui| {
         let v1_empty = state.timeline.tracks[0].clips.is_empty();
         let is_playing = state
@@ -424,6 +427,13 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             }
         }
 
+        if ui
+            .add_enabled(!v1_empty, egui::Button::new("✂ Split"))
+            .clicked()
+        {
+            do_split = true;
+        }
+
         ui.label(format!("{:.2}s", state.timeline_playhead_secs));
     });
 
@@ -445,6 +455,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             state.clips.get(tc.source_index).map(|c| {
                 let dur = match (tc.in_point, tc.out_point) {
                     (Some(i), Some(o)) if o > i => o - i,
+                    (None, Some(o)) => o,
+                    (Some(i), None) => c.info.duration().saturating_sub(i),
                     _ => c.info.duration(),
                 };
                 tc.start_on_track.as_secs_f32() + dur.as_secs_f32()
@@ -482,11 +494,15 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 egui::vec2(content_width, 24.0),
                 egui::Sense::click_and_drag(),
             );
+            // Origin shared by ruler ticks, playhead, and clip positions.
+            // lane_rect.left() = ruler_rect.left() + LABEL_WIDTH + item_spacing.x,
+            // so all time→pixel conversions must use the same offset.
+            let timeline_left = ruler_rect.left() + LABEL_WIDTH + ui.spacing().item_spacing.x;
             // Click or drag on ruler to reposition playhead
             if (ruler_resp.clicked() || ruler_resp.dragged())
                 && let Some(pos) = ruler_resp.interact_pointer_pos()
             {
-                let secs = ((pos.x - ruler_rect.left()) / pps).max(0.0) as f64;
+                let secs = ((pos.x - timeline_left) / pps).max(0.0) as f64;
                 state.timeline_playhead_secs = secs;
                 if let Some(h) = &state.timeline_player_handle {
                     h.seek(Duration::from_secs_f64(secs));
@@ -497,8 +513,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
 
             // Time tick marks every 5 s
             let mut t = 0.0f32;
-            while t * pps < content_width {
-                let x = ruler_rect.left() + t * pps;
+            while timeline_left + t * pps < ruler_rect.right() {
+                let x = timeline_left + t * pps;
                 painter.vline(
                     x,
                     ruler_rect.y_range(),
@@ -518,9 +534,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             for tc in &state.timeline.tracks[0].clips {
                 if let Some(source) = state.clips.get(tc.source_index) {
                     for &scene_ts in &source.scenes {
-                        let x =
-                            ruler_rect.left() + (tc.start_on_track + scene_ts).as_secs_f32() * pps;
-                        if x >= ruler_rect.left() && x <= ruler_rect.right() {
+                        let x = timeline_left + (tc.start_on_track + scene_ts).as_secs_f32() * pps;
+                        if x >= timeline_left && x <= ruler_rect.right() {
                             painter.vline(
                                 x,
                                 ruler_rect.y_range(),
@@ -589,6 +604,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                             let eff_in = tc.in_point.unwrap_or(Duration::ZERO);
                             let eff_dur = match (tc.in_point, tc.out_point) {
                                 (Some(i), Some(o)) if o > i => o - i,
+                                (None, Some(o)) => o,
+                                (Some(i), None) => source.info.duration().saturating_sub(i),
                                 _ => source.info.duration(),
                             };
                             let fps = source.info.frame_rate().unwrap_or(30.0) as f32;
@@ -1057,6 +1074,10 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                             state.clips.get(tc.source_index).map(|s| {
                                 match (tc.in_point, tc.out_point) {
                                     (Some(i), Some(o)) if o > i => (o - i).as_secs_f32(),
+                                    (None, Some(o)) => o.as_secs_f32(),
+                                    (Some(i), None) => {
+                                        s.info.duration().saturating_sub(i).as_secs_f32()
+                                    }
                                     _ => s.info.duration().as_secs_f32(),
                                 }
                             })
@@ -1090,7 +1111,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             }
 
             // ── Playhead ────────────────────────────────────────────────────────
-            let playhead_x = ruler_rect.left() + state.timeline_playhead_secs as f32 * pps;
+            let playhead_x = timeline_left + state.timeline_playhead_secs as f32 * pps;
             let tracks_bottom =
                 ruler_rect.bottom() + TRACK_HEIGHT * state.timeline.tracks.len() as f32;
             let playhead_color = egui::Color32::from_rgb(220, 60, 60);
@@ -1186,6 +1207,66 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
         if let Some(clip) = state.timeline.tracks[track_idx].clips.get_mut(clip_i) {
             clip.transition = transition;
             clip.transition_duration = duration;
+        }
+    }
+
+    // Split clips at playhead (C key or "✂ Split" button).
+    if do_split {
+        let playhead = Duration::from_secs_f64(state.timeline_playhead_secs);
+        // Collect: (track_idx, clip_idx, left_out_source, right_start_timeline, orig_out, source_index, transition_duration)
+        #[allow(clippy::type_complexity)]
+        let mut ops: Vec<(
+            usize,
+            usize,
+            Duration,
+            Duration,
+            Option<Duration>,
+            usize,
+            Duration,
+        )> = Vec::new();
+        for (ti, track) in state.timeline.tracks.iter().enumerate() {
+            for (ci, tc) in track.clips.iter().enumerate() {
+                if let Some(source) = state.clips.get(tc.source_index) {
+                    let eff_in = tc.in_point.unwrap_or(Duration::ZERO);
+                    let eff_dur = match (tc.in_point, tc.out_point) {
+                        (Some(i), Some(o)) if o > i => o - i,
+                        (None, Some(o)) => o,
+                        (Some(i), None) => source.info.duration().saturating_sub(i),
+                        _ => source.info.duration(),
+                    };
+                    let clip_end = tc.start_on_track + eff_dur;
+                    if playhead > tc.start_on_track && playhead < clip_end {
+                        let offset = playhead.saturating_sub(tc.start_on_track);
+                        let split_source = eff_in + offset;
+                        ops.push((
+                            ti,
+                            ci,
+                            split_source,
+                            playhead,
+                            tc.out_point,
+                            tc.source_index,
+                            tc.transition_duration,
+                        ));
+                    }
+                }
+            }
+        }
+        // Apply in reverse clip order so inserts don't shift remaining indices.
+        ops.sort_by(|a, b| b.1.cmp(&a.1));
+        for (ti, ci, left_out, right_start, right_out, source_index, transition_duration) in ops {
+            state.timeline.tracks[ti].clips[ci].out_point = Some(left_out);
+            let right = state::TimelineClip {
+                source_index,
+                start_on_track: right_start,
+                in_point: Some(left_out),
+                out_point: right_out,
+                transition: None,
+                transition_duration,
+            };
+            state.timeline.tracks[ti].clips.insert(ci + 1, right);
+        }
+        if state.timeline_is_paused {
+            state.clips_moved_while_paused = true;
         }
     }
 }
