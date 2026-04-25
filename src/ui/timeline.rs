@@ -305,8 +305,15 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
     }
 
     // ── Timeline playback controls ────────────────────────────────────────────
-    let mut do_split = !ui.ctx().wants_keyboard_input()
-        && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::X));
+    let wants_kb = ui.ctx().wants_keyboard_input();
+    let mut do_split =
+        !wants_kb && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::X));
+    let do_undo = !wants_kb && ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Z));
+    let do_redo = !wants_kb
+        && (ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Y))
+            || ui.input_mut(|i| {
+                i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Z)
+            }));
 
     ui.horizontal(|ui| {
         let v1_empty = state.timeline.tracks[0].clips.is_empty();
@@ -1163,6 +1170,28 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             );
         }); // end ScrollArea
 
+    // Apply undo/redo — must happen before the snapshot.
+    let mut applied_undo_redo = false;
+    if do_undo {
+        state.apply_undo();
+        applied_undo_redo = true;
+    }
+    if do_redo {
+        state.apply_redo();
+        applied_undo_redo = true;
+    }
+
+    // Snapshot all 3 tracks before applying any pending ops.
+    let tracks_before: [Vec<state::TimelineClip>; 3] =
+        std::array::from_fn(|i| state.timeline.tracks[i].clips.clone());
+    // Flags captured before pending vecs are consumed by for-loops.
+    let had_trims = !pending_trims.is_empty();
+    let had_moves = !pending_moves.is_empty();
+    let had_clips = !pending_clips.is_empty();
+    let had_transitions = !pending_transitions.is_empty();
+    let had_ripple_delete = pending_deletes.iter().any(|d| d.2);
+    let had_deletes = !pending_deletes.is_empty();
+
     // Apply drag / trim state changes.
     if clear_drag {
         state.clip_drag = None;
@@ -1311,6 +1340,42 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
         }
         if state.timeline_is_paused {
             state.clips_moved_while_paused = true;
+        }
+    }
+
+    // Record undo command if tracks changed and this wasn't an undo/redo.
+    if !applied_undo_redo {
+        let label: &'static str = if do_split {
+            "Split Clip"
+        } else if had_ripple_delete {
+            "Ripple Delete"
+        } else if had_deletes {
+            "Delete Clip"
+        } else if had_moves {
+            "Move Clip"
+        } else if had_trims {
+            "Trim Clip"
+        } else if had_transitions {
+            "Set Transition"
+        } else if had_clips {
+            "Add Clip"
+        } else {
+            ""
+        };
+        if !label.is_empty() {
+            let snapshots: Vec<_> = (0..3_usize)
+                .filter(|&i| state.timeline.tracks[i].clips != tracks_before[i])
+                .map(|i| {
+                    (
+                        i,
+                        tracks_before[i].clone(),
+                        state.timeline.tracks[i].clips.clone(),
+                    )
+                })
+                .collect();
+            if !snapshots.is_empty() {
+                state.push_edit(state::EditCommand::TrackSnapshot { snapshots, label });
+            }
         }
     }
 }

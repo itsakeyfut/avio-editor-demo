@@ -27,6 +27,25 @@ pub struct TimelineClipDrag {
     pub grab_offset_secs: f32,
 }
 
+/// A reversible timeline edit stored as per-track clip-vec snapshots.
+/// Undo = restore `before`; redo = restore `after`.
+#[derive(Clone)]
+pub enum EditCommand {
+    TrackSnapshot {
+        /// `(track_index, clips_before, clips_after)` for every modified track.
+        snapshots: Vec<(usize, Vec<TimelineClip>, Vec<TimelineClip>)>,
+        label: &'static str,
+    },
+}
+
+impl EditCommand {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::TrackSnapshot { label, .. } => label,
+        }
+    }
+}
+
 pub struct AppState {
     pub clips: Vec<ImportedClip>,
     pub selected_clip_index: Option<usize>,
@@ -87,6 +106,8 @@ pub struct AppState {
     pub clip_trim: Option<TimelineClipTrimDrag>,
     pub show_export_settings: bool,
     pub theme_preference: egui::ThemePreference,
+    pub undo_stack: Vec<EditCommand>,
+    pub redo_stack: Vec<EditCommand>,
 }
 
 impl Default for AppState {
@@ -151,6 +172,8 @@ impl Default for AppState {
             clip_trim: None,
             show_export_settings: false,
             theme_preference: egui::ThemePreference::System,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         }
     }
 }
@@ -324,6 +347,7 @@ pub struct Track {
     pub clips: Vec<TimelineClip>,
 }
 
+#[derive(Clone, PartialEq)]
 pub struct TimelineClip {
     pub source_index: usize,
     pub start_on_track: Duration,
@@ -383,6 +407,58 @@ impl AppState {
         self.timeline_pending_handle_rx = None;
         self.timeline_is_paused = false;
         self.clips_moved_while_paused = false;
+    }
+
+    pub fn push_edit(&mut self, cmd: EditCommand) {
+        self.redo_stack.clear();
+        self.undo_stack.push(cmd);
+        if self.undo_stack.len() > 50 {
+            self.undo_stack.remove(0);
+        }
+    }
+
+    fn pause_timeline_if_playing(&mut self) {
+        let is_playing = self
+            .timeline_player_thread
+            .as_ref()
+            .map(|h| !h.is_finished())
+            .unwrap_or(false);
+        if is_playing && !self.timeline_is_paused {
+            if let Some(h) = &self.timeline_player_handle {
+                h.pause();
+            }
+            self.timeline_is_paused = true;
+        }
+    }
+
+    pub fn apply_undo(&mut self) {
+        self.pause_timeline_if_playing();
+        if let Some(cmd) = self.undo_stack.pop() {
+            match &cmd {
+                EditCommand::TrackSnapshot { snapshots, .. } => {
+                    for (ti, before, _) in snapshots {
+                        self.timeline.tracks[*ti].clips = before.clone();
+                    }
+                }
+            }
+            self.redo_stack.push(cmd);
+            self.clips_moved_while_paused = true;
+        }
+    }
+
+    pub fn apply_redo(&mut self) {
+        self.pause_timeline_if_playing();
+        if let Some(cmd) = self.redo_stack.pop() {
+            match &cmd {
+                EditCommand::TrackSnapshot { snapshots, .. } => {
+                    for (ti, _, after) in snapshots {
+                        self.timeline.tracks[*ti].clips = after.clone();
+                    }
+                }
+            }
+            self.undo_stack.push(cmd);
+            self.clips_moved_while_paused = true;
+        }
     }
 }
 

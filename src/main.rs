@@ -47,6 +47,42 @@ impl eframe::App for AvioEditorApp {
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |_ui| {});
+                ui.menu_button("Edit", |ui| {
+                    let can_undo = !self.state.undo_stack.is_empty();
+                    let can_redo = !self.state.redo_stack.is_empty();
+                    let undo_label = self
+                        .state
+                        .undo_stack
+                        .last()
+                        .map(|c| format!("Undo {}", c.label()))
+                        .unwrap_or_else(|| "Undo".to_string());
+                    let redo_label = self
+                        .state
+                        .redo_stack
+                        .last()
+                        .map(|c| format!("Redo {}", c.label()))
+                        .unwrap_or_else(|| "Redo".to_string());
+                    if ui
+                        .add_enabled(
+                            can_undo,
+                            egui::Button::new(undo_label).shortcut_text("Ctrl+Z"),
+                        )
+                        .clicked()
+                    {
+                        self.state.apply_undo();
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            can_redo,
+                            egui::Button::new(redo_label).shortcut_text("Ctrl+Y"),
+                        )
+                        .clicked()
+                    {
+                        self.state.apply_redo();
+                        ui.close();
+                    }
+                });
                 ui.menu_button("Export", |_ui| {});
                 ui.menu_button("View", |ui| {
                     ui.label("Theme");
