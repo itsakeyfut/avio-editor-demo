@@ -108,6 +108,10 @@ pub struct AppState {
     pub theme_preference: egui::ThemePreference,
     pub undo_stack: Vec<EditCommand>,
     pub redo_stack: Vec<EditCommand>,
+    /// The currently selected clip on the timeline: `(track_idx, clip_idx)`.
+    pub timeline_selected: Option<(usize, usize)>,
+    /// A single-slot clipboard: `(source_track_idx, clip)` copied by Ctrl+C.
+    pub timeline_clipboard: Option<(usize, TimelineClip)>,
 }
 
 impl Default for AppState {
@@ -174,6 +178,8 @@ impl Default for AppState {
             theme_preference: egui::ThemePreference::System,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            timeline_selected: None,
+            timeline_clipboard: None,
         }
     }
 }
