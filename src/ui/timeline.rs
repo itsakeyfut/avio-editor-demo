@@ -431,6 +431,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
 
     const TRACK_HEIGHT: f32 = 40.0;
     const LABEL_WIDTH: f32 = 40.0;
+    const TRIM_HANDLE_PX: f32 = 6.0;
 
     let pps = state.timeline.pixels_per_second;
 
@@ -457,9 +458,16 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
         Vec::new();
     // (src_track, src_clip, dst_track, new_start_secs)
     let mut pending_moves: Vec<(usize, usize, usize, f32)> = Vec::new();
+    // (track_idx, clip_idx, new_in_point, new_out_point, new_start_on_track)
+    #[allow(clippy::type_complexity)]
+    let mut pending_trims: Vec<(usize, usize, Option<Duration>, Option<Duration>, Duration)> =
+        Vec::new();
     let active_drag = state.clip_drag.clone();
+    let active_trim = state.clip_trim.clone();
     let mut new_drag: Option<state::TimelineClipDrag> = None;
+    let mut new_trim: Option<state::TimelineClipTrimDrag> = None;
     let mut clear_drag = false;
+    let mut clear_trim = false;
     // Set to true when a clip is dropped to a new position while the player is
     // paused. Resume must respawn the player so TimelineRunner gets the updated
     // clip layout; h.play() alone cannot update the runner's internal state.
@@ -578,21 +586,83 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     };
                     for (clip_i, tc) in track.clips.iter().enumerate() {
                         if let Some(source) = state.clips.get(tc.source_index) {
+                            let eff_in = tc.in_point.unwrap_or(Duration::ZERO);
                             let eff_dur = match (tc.in_point, tc.out_point) {
                                 (Some(i), Some(o)) if o > i => o - i,
                                 _ => source.info.duration(),
                             };
-                            let x = lane_rect.left() + tc.start_on_track.as_secs_f32() * pps;
-                            let w = eff_dur.as_secs_f32() * pps;
+                            let fps = source.info.frame_rate().unwrap_or(30.0) as f32;
+                            let one_frame_sec = (1.0 / fps).max(0.001_f32);
+                            let orig_x = lane_rect.left() + tc.start_on_track.as_secs_f32() * pps;
+                            let orig_w = eff_dur.as_secs_f32() * pps;
+
+                            // Live-preview dimensions during an active trim drag
+                            let (live_x, live_w) = if let Some(ref trim) = active_trim {
+                                if trim.track_idx == track_idx && trim.clip_idx == clip_i {
+                                    if let Some(ptr) = ui.input(|i| i.pointer.latest_pos()) {
+                                        match trim.edge {
+                                            state::TrimEdge::Right => {
+                                                let max_right = orig_x
+                                                    + (source.info.duration().as_secs_f32()
+                                                        - eff_in.as_secs_f32())
+                                                        * pps;
+                                                let new_right = ptr
+                                                    .x
+                                                    .clamp(orig_x + one_frame_sec * pps, max_right);
+                                                (orig_x, (new_right - orig_x).max(1.0))
+                                            }
+                                            state::TrimEdge::Left => {
+                                                let right_x = orig_x + orig_w;
+                                                let source_left_x = lane_rect.left()
+                                                    + (tc.start_on_track.as_secs_f32()
+                                                        - eff_in.as_secs_f32())
+                                                        * pps;
+                                                let min_left = lane_rect.left().max(source_left_x);
+                                                let max_left = right_x - one_frame_sec * pps;
+                                                let new_left = ptr.x.clamp(min_left, max_left);
+                                                (new_left, (right_x - new_left).max(1.0))
+                                            }
+                                        }
+                                    } else {
+                                        (orig_x, orig_w)
+                                    }
+                                } else {
+                                    (orig_x, orig_w)
+                                }
+                            } else {
+                                (orig_x, orig_w)
+                            };
+
                             let cr = egui::Rect::from_min_size(
-                                egui::pos2(x, lane_rect.top()),
-                                egui::vec2(w.max(2.0), TRACK_HEIGHT),
+                                egui::pos2(live_x, lane_rect.top()),
+                                egui::vec2(live_w.max(2.0), TRACK_HEIGHT),
                             );
                             let is_being_dragged = active_drag
                                 .as_ref()
                                 .is_some_and(|d| d.src_track == track_idx && d.src_clip == clip_i);
                             if cr.max.x >= lane_rect.left() && cr.min.x <= lane_rect.right() {
                                 ui.painter().rect_filled(cr, 4.0, clip_color);
+
+                                // Subtle bright strips at left/right edges to mark trim handles
+                                let handle_color = egui::Color32::from_white_alpha(60);
+                                ui.painter().rect_filled(
+                                    egui::Rect::from_min_size(
+                                        cr.min,
+                                        egui::vec2(TRIM_HANDLE_PX, cr.height()),
+                                    )
+                                    .intersect(cr),
+                                    0.0,
+                                    handle_color,
+                                );
+                                ui.painter().rect_filled(
+                                    egui::Rect::from_min_size(
+                                        egui::pos2(cr.right() - TRIM_HANDLE_PX, cr.top()),
+                                        egui::vec2(TRIM_HANDLE_PX, cr.height()),
+                                    )
+                                    .intersect(cr),
+                                    0.0,
+                                    handle_color,
+                                );
 
                                 // Filmstrip thumbnails — V1/V2 only
                                 if track.kind != state::TrackKind::Audio1
@@ -700,13 +770,23 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                     }
                                 }
 
-                                // Sprite frame tooltip on hover + drag-to-reposition + context menu
+                                // Sprite frame tooltip on hover + drag-to-reposition/trim + context menu
                                 let clip_id = egui::Id::new(("tl_clip", track_idx, clip_i));
                                 let clip_resp =
                                     ui.interact(cr, clip_id, egui::Sense::click_and_drag());
 
+                                // Cursor change and edge-proximity flag for trim handles
+                                let near_trim_edge = clip_resp.hovered()
+                                    && ui.input(|i| i.pointer.latest_pos()).is_some_and(|ptr| {
+                                        ptr.x <= orig_x + TRIM_HANDLE_PX
+                                            || ptr.x >= orig_x + orig_w - TRIM_HANDLE_PX
+                                    });
+                                if near_trim_edge {
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                                }
+
                                 if clip_resp.drag_started() {
-                                    // Auto-pause so the user can reposition clips and
+                                    // Auto-pause so the user can edit clips and
                                     // resume from the exact same playhead frame.
                                     let is_timeline_playing = state
                                         .timeline_player_thread
@@ -719,47 +799,135 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                         }
                                         state.timeline_is_paused = true;
                                     }
-                                    let ptr_x = clip_resp
-                                        .interact_pointer_pos()
+
+                                    // Use press_origin (the exact click position) rather than
+                                    // interact_pointer_pos (current position), which may have
+                                    // already drifted outside the 6 px trim handle zone by the
+                                    // time egui detects the drag threshold.
+                                    let ptr_x = ui
+                                        .input(|i| i.pointer.press_origin())
                                         .map(|p| p.x)
-                                        .unwrap_or(cr.left());
-                                    let grab = ((ptr_x - lane_rect.left()) / pps
-                                        - tc.start_on_track.as_secs_f32())
-                                    .max(0.0);
-                                    new_drag = Some(state::TimelineClipDrag {
-                                        src_track: track_idx,
-                                        src_clip: clip_i,
-                                        grab_offset_secs: grab,
-                                    });
+                                        .unwrap_or(orig_x);
+
+                                    if ptr_x <= orig_x + TRIM_HANDLE_PX {
+                                        new_trim = Some(state::TimelineClipTrimDrag {
+                                            track_idx,
+                                            clip_idx: clip_i,
+                                            edge: state::TrimEdge::Left,
+                                        });
+                                    } else if ptr_x >= orig_x + orig_w - TRIM_HANDLE_PX {
+                                        new_trim = Some(state::TimelineClipTrimDrag {
+                                            track_idx,
+                                            clip_idx: clip_i,
+                                            edge: state::TrimEdge::Right,
+                                        });
+                                    } else {
+                                        let grab = ((ptr_x - lane_rect.left()) / pps
+                                            - tc.start_on_track.as_secs_f32())
+                                        .max(0.0);
+                                        new_drag = Some(state::TimelineClipDrag {
+                                            src_track: track_idx,
+                                            src_clip: clip_i,
+                                            grab_offset_secs: grab,
+                                        });
+                                    }
                                 }
 
-                                if clip_resp.drag_stopped()
-                                    && let Some(ref drag) = active_drag
-                                    && drag.src_track == track_idx
-                                    && drag.src_clip == clip_i
-                                {
-                                    if let Some(ptr) = ui.input(|i| i.pointer.latest_pos()) {
-                                        let y_off = ptr.y - ruler_rect.bottom();
-                                        let dst_track = ((y_off / TRACK_HEIGHT).floor() as isize)
-                                            .clamp(0, tracks_count as isize - 1)
-                                            as usize;
-                                        let new_start = ((ptr.x - lane_rect.left()) / pps
-                                            - drag.grab_offset_secs)
-                                            .max(0.0);
-                                        pending_moves.push((
-                                            drag.src_track,
-                                            drag.src_clip,
-                                            dst_track,
-                                            new_start,
-                                        ));
-                                        if state.timeline_is_paused {
-                                            moved_while_paused = true;
+                                if clip_resp.drag_stopped() {
+                                    if let Some(ref trim) = active_trim {
+                                        if trim.track_idx == track_idx && trim.clip_idx == clip_i {
+                                            if let Some(ptr) = ui.input(|i| i.pointer.latest_pos())
+                                            {
+                                                match trim.edge {
+                                                    state::TrimEdge::Right => {
+                                                        let max_right = orig_x
+                                                            + (source
+                                                                .info
+                                                                .duration()
+                                                                .as_secs_f32()
+                                                                - eff_in.as_secs_f32())
+                                                                * pps;
+                                                        let new_right = ptr.x.clamp(
+                                                            orig_x + one_frame_sec * pps,
+                                                            max_right,
+                                                        );
+                                                        let new_out = eff_in
+                                                            + Duration::from_secs_f32(
+                                                                (new_right - orig_x) / pps,
+                                                            );
+                                                        pending_trims.push((
+                                                            track_idx,
+                                                            clip_i,
+                                                            tc.in_point,
+                                                            Some(new_out),
+                                                            tc.start_on_track,
+                                                        ));
+                                                    }
+                                                    state::TrimEdge::Left => {
+                                                        let right_x = orig_x + orig_w;
+                                                        let source_left_x = lane_rect.left()
+                                                            + (tc.start_on_track.as_secs_f32()
+                                                                - eff_in.as_secs_f32())
+                                                                * pps;
+                                                        let min_left =
+                                                            lane_rect.left().max(source_left_x);
+                                                        let max_left =
+                                                            right_x - one_frame_sec * pps;
+                                                        let new_left =
+                                                            ptr.x.clamp(min_left, max_left);
+                                                        let new_start_secs =
+                                                            (new_left - lane_rect.left()) / pps;
+                                                        let delta = new_start_secs
+                                                            - tc.start_on_track.as_secs_f32();
+                                                        let new_in = Duration::from_secs_f32(
+                                                            (eff_in.as_secs_f32() + delta).max(0.0),
+                                                        );
+                                                        pending_trims.push((
+                                                            track_idx,
+                                                            clip_i,
+                                                            Some(new_in),
+                                                            tc.out_point,
+                                                            Duration::from_secs_f32(
+                                                                new_start_secs.max(0.0),
+                                                            ),
+                                                        ));
+                                                    }
+                                                }
+                                            }
+                                            clear_trim = true;
+                                            if state.timeline_is_paused {
+                                                moved_while_paused = true;
+                                            }
                                         }
+                                    } else if let Some(ref drag) = active_drag
+                                        && drag.src_track == track_idx
+                                        && drag.src_clip == clip_i
+                                    {
+                                        if let Some(ptr) = ui.input(|i| i.pointer.latest_pos()) {
+                                            let y_off = ptr.y - ruler_rect.bottom();
+                                            let dst_track = ((y_off / TRACK_HEIGHT).floor()
+                                                as isize)
+                                                .clamp(0, tracks_count as isize - 1)
+                                                as usize;
+                                            let new_start = ((ptr.x - lane_rect.left()) / pps
+                                                - drag.grab_offset_secs)
+                                                .max(0.0);
+                                            pending_moves.push((
+                                                drag.src_track,
+                                                drag.src_clip,
+                                                dst_track,
+                                                new_start,
+                                            ));
+                                            if state.timeline_is_paused {
+                                                moved_while_paused = true;
+                                            }
+                                        }
+                                        clear_drag = true;
                                     }
-                                    clear_drag = true;
                                 }
 
                                 if clip_resp.hovered()
+                                    && !near_trim_edge
                                     && let Some(ss) = &source.sprite_sheet
                                     && let Some(ptr) = ui.input(|i| i.pointer.latest_pos())
                                 {
@@ -957,15 +1125,30 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             );
         }); // end ScrollArea
 
-    // Apply drag state changes.
+    // Apply drag / trim state changes.
     if clear_drag {
         state.clip_drag = None;
     }
     if let Some(nd) = new_drag {
         state.clip_drag = Some(nd);
     }
+    if clear_trim {
+        state.clip_trim = None;
+    }
+    if let Some(nt) = new_trim {
+        state.clip_trim = Some(nt);
+    }
     if moved_while_paused {
         state.clips_moved_while_paused = true;
+    }
+
+    // Apply timeline clip trims.
+    for (ti, ci, new_in, new_out, new_start) in pending_trims {
+        if let Some(clip) = state.timeline.tracks[ti].clips.get_mut(ci) {
+            clip.in_point = new_in;
+            clip.out_point = new_out;
+            clip.start_on_track = new_start;
+        }
     }
 
     // Apply timeline clip moves.
