@@ -306,7 +306,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
 
     // ── Timeline playback controls ────────────────────────────────────────────
     let mut do_split = !ui.ctx().wants_keyboard_input()
-        && ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::X));
+        && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::X));
 
     ui.horizontal(|ui| {
         let v1_empty = state.timeline.tracks[0].clips.is_empty();
