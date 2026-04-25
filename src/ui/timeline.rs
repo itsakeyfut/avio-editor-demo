@@ -468,6 +468,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
     let mut pending_clips: Vec<(usize, usize, f32)> = Vec::new();
     let mut pending_transitions: Vec<(usize, usize, Option<avio::XfadeTransition>, Duration)> =
         Vec::new();
+    // (track_idx, clip_idx, is_ripple)
+    let mut pending_deletes: Vec<(usize, usize, bool)> = Vec::new();
     // (src_track, src_clip, dst_track, new_start_secs)
     let mut pending_moves: Vec<(usize, usize, usize, f32)> = Vec::new();
     // (track_idx, clip_idx, new_in_point, new_out_point, new_start_on_track)
@@ -983,63 +985,78 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                     );
                                 }
 
-                                // Context menu on right-click — V1 clips only
-                                if track.kind == state::TrackKind::Video1 {
+                                // Context menu on right-click — all tracks
+                                {
                                     let current_transition = tc.transition;
                                     let mut new_duration_ms =
                                         tc.transition_duration.as_millis() as f64;
                                     clip_resp.context_menu(|ui| {
-                                        ui.label("Transition to previous clip:");
-                                        for &variant in &[
-                                            avio::XfadeTransition::Fade,
-                                            avio::XfadeTransition::Dissolve,
-                                            avio::XfadeTransition::WipeLeft,
-                                            avio::XfadeTransition::WipeRight,
-                                            avio::XfadeTransition::SlideDown,
-                                        ] {
+                                        // Transition options — V1 only
+                                        if track.kind == state::TrackKind::Video1 {
+                                            ui.label("Transition to previous clip:");
+                                            for &variant in &[
+                                                avio::XfadeTransition::Fade,
+                                                avio::XfadeTransition::Dissolve,
+                                                avio::XfadeTransition::WipeLeft,
+                                                avio::XfadeTransition::WipeRight,
+                                                avio::XfadeTransition::SlideDown,
+                                            ] {
+                                                if ui
+                                                    .selectable_label(
+                                                        current_transition == Some(variant),
+                                                        variant.as_str(),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    pending_transitions.push((
+                                                        track_idx,
+                                                        clip_i,
+                                                        Some(variant),
+                                                        Duration::from_millis(
+                                                            new_duration_ms as u64,
+                                                        ),
+                                                    ));
+                                                    ui.close();
+                                                }
+                                            }
+                                            ui.separator();
+                                            if ui.button("Hard cut (remove)").clicked() {
+                                                pending_transitions.push((
+                                                    track_idx,
+                                                    clip_i,
+                                                    None,
+                                                    Duration::from_millis(500),
+                                                ));
+                                                ui.close();
+                                            }
+                                            ui.separator();
+                                            ui.label("Duration:");
                                             if ui
-                                                .selectable_label(
-                                                    current_transition == Some(variant),
-                                                    variant.as_str(),
+                                                .add(
+                                                    egui::DragValue::new(&mut new_duration_ms)
+                                                        .range(100.0..=5000.0)
+                                                        .speed(10.0)
+                                                        .suffix(" ms"),
                                                 )
-                                                .clicked()
+                                                .changed()
                                             {
                                                 pending_transitions.push((
                                                     track_idx,
                                                     clip_i,
-                                                    Some(variant),
+                                                    current_transition,
                                                     Duration::from_millis(new_duration_ms as u64),
                                                 ));
-                                                ui.close();
                                             }
+                                            ui.separator();
                                         }
-                                        ui.separator();
-                                        if ui.button("Hard cut (remove)").clicked() {
-                                            pending_transitions.push((
-                                                track_idx,
-                                                clip_i,
-                                                None,
-                                                Duration::from_millis(500),
-                                            ));
+                                        // Delete options — all tracks
+                                        if ui.button("Delete").clicked() {
+                                            pending_deletes.push((track_idx, clip_i, false));
                                             ui.close();
                                         }
-                                        ui.separator();
-                                        ui.label("Duration:");
-                                        if ui
-                                            .add(
-                                                egui::DragValue::new(&mut new_duration_ms)
-                                                    .range(100.0..=5000.0)
-                                                    .speed(10.0)
-                                                    .suffix(" ms"),
-                                            )
-                                            .changed()
-                                        {
-                                            pending_transitions.push((
-                                                track_idx,
-                                                clip_i,
-                                                current_transition,
-                                                Duration::from_millis(new_duration_ms as u64),
-                                            ));
+                                        if ui.button("Ripple Delete").clicked() {
+                                            pending_deletes.push((track_idx, clip_i, true));
+                                            ui.close();
                                         }
                                     });
                                 }
@@ -1207,6 +1224,33 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
         if let Some(clip) = state.timeline.tracks[track_idx].clips.get_mut(clip_i) {
             clip.transition = transition;
             clip.transition_duration = duration;
+        }
+    }
+
+    // Apply deletes in reverse clip order so removals don't shift remaining indices.
+    pending_deletes.sort_by(|a, b| b.1.cmp(&a.1));
+    for (ti, ci, is_ripple) in pending_deletes {
+        if ci < state.timeline.tracks[ti].clips.len() {
+            let deleted = state.timeline.tracks[ti].clips.remove(ci);
+            if is_ripple {
+                let src_dur = state
+                    .clips
+                    .get(deleted.source_index)
+                    .map(|s| s.info.duration())
+                    .unwrap_or(Duration::ZERO);
+                let eff_dur = match (deleted.in_point, deleted.out_point) {
+                    (Some(i), Some(o)) if o > i => o - i,
+                    (None, Some(o)) => o,
+                    (Some(i), None) => src_dur.saturating_sub(i),
+                    _ => src_dur,
+                };
+                let gap_start = deleted.start_on_track + eff_dur;
+                for clip in &mut state.timeline.tracks[ti].clips {
+                    if clip.start_on_track >= gap_start {
+                        clip.start_on_track = clip.start_on_track.saturating_sub(eff_dur);
+                    }
+                }
+            }
         }
     }
 
