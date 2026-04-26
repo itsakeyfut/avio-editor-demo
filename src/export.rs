@@ -17,6 +17,8 @@ pub struct ExportClip {
     pub source_duration: Duration,
     /// Frame rate of the source clip — used to estimate total_frames for progress.
     pub fps: f64,
+    /// Per-clip audio gain in dB (`0.0` = unity). Applied via `Clip::volume_db` on A1 clips.
+    pub gain_db: f32,
 }
 
 /// Send-safe snapshot of all timeline tracks, constructed on the main thread
@@ -65,6 +67,11 @@ fn clips_to_avio(clips: Vec<ExportClip>) -> Vec<avio::Clip> {
             let clip = match (c.in_point, c.out_point) {
                 (Some(in_pt), Some(out_pt)) => clip.trim(in_pt, out_pt),
                 _ => clip,
+            };
+            let clip = if c.gain_db != 0.0 {
+                clip.volume(c.gain_db as f64)
+            } else {
+                clip
             };
             match c.transition {
                 Some(kind) => clip.with_transition(kind, c.transition_duration),
