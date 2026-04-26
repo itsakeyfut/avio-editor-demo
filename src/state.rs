@@ -112,6 +112,11 @@ pub struct AppState {
     pub timeline_selected: Option<(usize, usize)>,
     /// A single-slot clipboard: `(source_track_idx, clip)` copied by Ctrl+C.
     pub timeline_clipboard: Option<(usize, TimelineClip)>,
+    // ── JKL transport ────────────────────────────────────────────────────────
+    /// Current L-key forward rate. 0.0 = not in JKL-forward mode; positive = 1/2/4/8×.
+    pub jkl_forward_rate: f64,
+    /// Current J-key reverse rate. 0.0 = not reversing; positive = 1/2/4/8×.
+    pub jkl_reverse_rate: f64,
 }
 
 impl Default for AppState {
@@ -180,6 +185,8 @@ impl Default for AppState {
             redo_stack: Vec::new(),
             timeline_selected: None,
             timeline_clipboard: None,
+            jkl_forward_rate: 0.0,
+            jkl_reverse_rate: 0.0,
         }
     }
 }
@@ -465,6 +472,33 @@ impl AppState {
             self.undo_stack.push(cmd);
             self.clips_moved_while_paused = true;
         }
+    }
+
+    /// Returns a clone of the active player handle (timeline takes priority over source monitor).
+    pub fn jkl_active_handle(&self) -> Option<avio::PlayerHandle> {
+        let tl_active = self
+            .timeline_player_thread
+            .as_ref()
+            .map(|h| !h.is_finished())
+            .unwrap_or(false);
+        if tl_active {
+            return self.timeline_player_handle.clone();
+        }
+        let src_active = self
+            .player_thread
+            .as_ref()
+            .map(|h| !h.is_finished())
+            .unwrap_or(false);
+        if src_active {
+            self.player_handle.clone()
+        } else {
+            None
+        }
+    }
+
+    /// Resets J-key reverse-rate state. The avio runner handles rate transitions internally.
+    pub fn stop_jkl_reverse(&mut self) {
+        self.jkl_reverse_rate = 0.0;
     }
 }
 

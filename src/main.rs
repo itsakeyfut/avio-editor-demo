@@ -10,6 +10,112 @@ mod thumbnail;
 mod trim;
 mod ui;
 
+fn handle_jkl_transport(state: &mut state::AppState, ctx: &egui::Context) {
+    use std::sync::atomic::Ordering;
+
+    if ctx.wants_keyboard_input() {
+        return;
+    }
+    let Some(handle) = state.jkl_active_handle() else {
+        return;
+    };
+
+    let tl_active = state
+        .timeline_player_thread
+        .as_ref()
+        .map(|h| !h.is_finished())
+        .unwrap_or(false);
+
+    let k_down = ctx.input(|i| i.key_down(egui::Key::K));
+    let l = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::L));
+    let j = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::J));
+    // K as a solo press — only fires when not part of a K+L or K+J combo.
+    let k = !l && !j && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::K));
+
+    if k_down && l {
+        // K+L held: slow forward at 0.25×
+        state.stop_jkl_reverse();
+        state.jkl_forward_rate = 0.25;
+        handle.set_rate(0.25);
+        handle.play();
+        state.cpal_rate.store(0.25f64.to_bits(), Ordering::Relaxed);
+        if tl_active {
+            state.timeline_is_paused = false;
+        } else {
+            state.is_paused = false;
+            state.playback_rate = 0.25;
+        }
+        return;
+    }
+    if k_down && j {
+        // K+J held: slow reverse at 0.25×
+        state.jkl_forward_rate = 0.0;
+        state.jkl_reverse_rate = 0.25;
+        handle.set_rate(-0.25);
+        handle.play();
+        if tl_active {
+            state.timeline_is_paused = false;
+        } else {
+            state.is_paused = false;
+        }
+        return;
+    }
+    if k {
+        // K: pause and reset speed to 1×
+        state.stop_jkl_reverse();
+        state.jkl_forward_rate = 0.0;
+        handle.pause();
+        handle.set_rate(1.0);
+        state.cpal_rate.store(1.0f64.to_bits(), Ordering::Relaxed);
+        if tl_active {
+            state.timeline_is_paused = true;
+        } else {
+            state.is_paused = true;
+            state.playback_rate = 1.0;
+        }
+        return;
+    }
+    if l {
+        // L: play forward; each press doubles speed (1 → 2 → 4 → 8×, capped)
+        state.stop_jkl_reverse();
+        let new_rate = if state.jkl_forward_rate <= 0.0 {
+            1.0
+        } else {
+            (state.jkl_forward_rate * 2.0).min(8.0)
+        };
+        state.jkl_forward_rate = new_rate;
+        handle.set_rate(new_rate);
+        handle.play();
+        state.cpal_rate.store(new_rate.to_bits(), Ordering::Relaxed);
+        if tl_active {
+            state.timeline_is_paused = false;
+        } else {
+            state.is_paused = false;
+            state.playback_rate = new_rate;
+        }
+        return;
+    }
+    if j {
+        // J: reverse scrub via avio PlayerRunner's rate < 0 path.
+        // Each press doubles speed (1 → 2 → 4 → 8×, capped).
+        // Do NOT pause first — the reverse path runs only when the runner is active.
+        let new_rate = if state.jkl_reverse_rate == 0.0 {
+            1.0
+        } else {
+            (state.jkl_reverse_rate * 2.0).min(8.0)
+        };
+        state.jkl_forward_rate = 0.0;
+        state.jkl_reverse_rate = new_rate;
+        handle.set_rate(-(new_rate));
+        handle.play();
+        if tl_active {
+            state.timeline_is_paused = false;
+        } else {
+            state.is_paused = false;
+        }
+    }
+}
+
 fn main() -> eframe::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     let rt = tokio::runtime::Runtime::new().map_err(|e| eframe::Error::AppCreation(Box::new(e)))?;
@@ -42,6 +148,9 @@ impl eframe::App for AvioEditorApp {
 
         // Apply the user-selected theme every frame.
         ctx.set_theme(self.state.theme_preference);
+
+        // JKL transport controls (global; works in both Source Monitor and Timeline).
+        handle_jkl_transport(&mut self.state, ctx);
 
         // 1. Top menu bar (must come before all other panels)
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
