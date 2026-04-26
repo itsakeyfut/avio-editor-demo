@@ -1047,7 +1047,24 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                     }
                                 }
 
-                                // Gain line — A1 track only.
+                                // Sprite frame tooltip on hover + drag-to-reposition/trim + context menu
+                                // Registered first so the gain interaction (below) has higher priority.
+                                let clip_id = egui::Id::new(("tl_clip", track_idx, clip_i));
+                                let clip_resp =
+                                    ui.interact(cr, clip_id, egui::Sense::click_and_drag());
+
+                                // Cursor change and edge-proximity flag for trim handles
+                                let near_trim_edge = clip_resp.hovered()
+                                    && ui.input(|i| i.pointer.latest_pos()).is_some_and(|ptr| {
+                                        ptr.x <= orig_x + TRIM_HANDLE_PX
+                                            || ptr.x >= orig_x + orig_w - TRIM_HANDLE_PX
+                                    });
+                                if near_trim_edge {
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                                }
+
+                                // Gain line — A1 track only. Registered AFTER clip_resp so it
+                                // wins hover/drag priority when the pointer is over the line.
                                 // Range: −40 dB (bottom) to +12 dB (top); 0 dB at mid-height.
                                 // avio gap: per-clip gain not applied (no audio_filter() on TimelineBuilder)
                                 let gain_resp_for_clip = if track.kind == state::TrackKind::Audio1 {
@@ -1109,21 +1126,6 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                 } else {
                                     None
                                 };
-
-                                // Sprite frame tooltip on hover + drag-to-reposition/trim + context menu
-                                let clip_id = egui::Id::new(("tl_clip", track_idx, clip_i));
-                                let clip_resp =
-                                    ui.interact(cr, clip_id, egui::Sense::click_and_drag());
-
-                                // Cursor change and edge-proximity flag for trim handles
-                                let near_trim_edge = clip_resp.hovered()
-                                    && ui.input(|i| i.pointer.latest_pos()).is_some_and(|ptr| {
-                                        ptr.x <= orig_x + TRIM_HANDLE_PX
-                                            || ptr.x >= orig_x + orig_w - TRIM_HANDLE_PX
-                                    });
-                                if near_trim_edge {
-                                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-                                }
 
                                 let gain_consuming_drag = gain_resp_for_clip
                                     .as_ref()
