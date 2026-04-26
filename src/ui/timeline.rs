@@ -515,6 +515,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 out_point: tc.out_point,
                 transition: tc.transition,
                 transition_duration: tc.transition_duration,
+                gain_db: tc.gain_db,
             };
             let v1: Vec<_> = state.timeline.tracks[0]
                 .clips
@@ -571,6 +572,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                             out_point: tc.out_point,
                             transition: tc.transition,
                             transition_duration: tc.transition_duration,
+                            gain_db: tc.gain_db,
                         };
                         let v1: Vec<_> = state.timeline.tracks[0]
                             .clips
