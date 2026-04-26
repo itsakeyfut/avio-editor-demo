@@ -484,6 +484,10 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
         });
     let do_duplicate =
         !wants_kb && ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::D));
+    let do_loop_in =
+        !wants_kb && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::I));
+    let do_loop_out =
+        !wants_kb && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::O));
 
     ui.horizontal(|ui| {
         let v1_empty = state.timeline.tracks[0].clips.is_empty();
@@ -612,6 +616,17 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             if ui.button("⏹ Stop").clicked() {
                 state.stop_timeline_player();
                 state.timeline_playhead_secs = 0.0;
+                state.timeline_loop_in = None;
+                state.timeline_loop_out = None;
+                state.timeline_loop_enabled = false;
+            }
+            ui.separator();
+            if ui
+                .selectable_label(state.timeline_loop_enabled, "⟲")
+                .on_hover_text("Loop between I/O markers (I = in, O = out)")
+                .clicked()
+            {
+                state.timeline_loop_enabled = !state.timeline_loop_enabled;
             }
         }
 
@@ -737,6 +752,55 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                             );
                         }
                     }
+                }
+            }
+
+            // Loop region: shaded band + I/O marker lines
+            if let (Some(li), Some(lo)) = (state.timeline_loop_in, state.timeline_loop_out)
+                && li < lo
+            {
+                let x1 = (timeline_left + li.as_secs_f32() * pps).max(timeline_left);
+                let x2 = (timeline_left + lo.as_secs_f32() * pps).min(ruler_rect.right());
+                if x1 < x2 {
+                    painter.rect_filled(
+                        egui::Rect::from_x_y_ranges(x1..=x2, ruler_rect.y_range()),
+                        0.0,
+                        egui::Color32::from_rgba_unmultiplied(100, 200, 255, 40),
+                    );
+                }
+            }
+            if let Some(li) = state.timeline_loop_in {
+                let x = timeline_left + li.as_secs_f32() * pps;
+                if x >= timeline_left && x <= ruler_rect.right() {
+                    painter.vline(
+                        x,
+                        ruler_rect.y_range(),
+                        egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 200, 255)),
+                    );
+                    painter.text(
+                        egui::pos2(x + 2.0, ruler_rect.top() + 2.0),
+                        egui::Align2::LEFT_TOP,
+                        "I",
+                        egui::FontId::monospace(9.0),
+                        egui::Color32::from_rgb(100, 200, 255),
+                    );
+                }
+            }
+            if let Some(lo) = state.timeline_loop_out {
+                let x = timeline_left + lo.as_secs_f32() * pps;
+                if x >= timeline_left && x <= ruler_rect.right() {
+                    painter.vline(
+                        x,
+                        ruler_rect.y_range(),
+                        egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 200, 255)),
+                    );
+                    painter.text(
+                        egui::pos2(x + 2.0, ruler_rect.top() + 2.0),
+                        egui::Align2::LEFT_TOP,
+                        "O",
+                        egui::FontId::monospace(9.0),
+                        egui::Color32::from_rgb(100, 200, 255),
+                    );
                 }
             }
 
@@ -1730,5 +1794,16 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 state.push_edit(state::EditCommand::TrackSnapshot { snapshots, label });
             }
         }
+    }
+
+    if do_loop_in {
+        state.timeline_loop_in = Some(std::time::Duration::from_secs_f64(
+            state.timeline_playhead_secs,
+        ));
+    }
+    if do_loop_out {
+        state.timeline_loop_out = Some(std::time::Duration::from_secs_f64(
+            state.timeline_playhead_secs,
+        ));
     }
 }

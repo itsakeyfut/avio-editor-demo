@@ -117,6 +117,10 @@ pub struct AppState {
     pub jkl_forward_rate: f64,
     /// Current J-key reverse rate. 0.0 = not reversing; positive = 1/2/4/8×.
     pub jkl_reverse_rate: f64,
+    // ── Timeline loop region ─────────────────────────────────────────────────
+    pub timeline_loop_in: Option<std::time::Duration>,
+    pub timeline_loop_out: Option<std::time::Duration>,
+    pub timeline_loop_enabled: bool,
 }
 
 impl Default for AppState {
@@ -187,6 +191,9 @@ impl Default for AppState {
             timeline_clipboard: None,
             jkl_forward_rate: 0.0,
             jkl_reverse_rate: 0.0,
+            timeline_loop_in: None,
+            timeline_loop_out: None,
+            timeline_loop_enabled: false,
         }
     }
 }
