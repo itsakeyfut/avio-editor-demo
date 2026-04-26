@@ -378,6 +378,9 @@ pub struct TimelineClip {
     pub transition: Option<avio::XfadeTransition>,
     /// Duration of the transition. Default: 500 ms.
     pub transition_duration: Duration,
+    /// Per-clip audio gain in dB. Range: −40 dB to +12 dB. Default: 0.0 (unity).
+    /// avio gap: per-clip gain not applied (no audio_filter() on TimelineBuilder)
+    pub gain_db: f32,
 }
 
 pub struct TimelineState {
