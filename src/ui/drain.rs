@@ -176,6 +176,19 @@ fn drain_frame(state: &mut AppState, ctx: &egui::Context) {
             .unwrap_or(false)
         {
             state.timeline_playhead_secs = frame.pts.as_secs_f64();
+            // Loop-back: when loop is enabled and the presented frame reaches the
+            // out-point, seek back to the in-point.
+            if state.timeline_loop_enabled
+                && !state.timeline_is_paused
+                && let Some(loop_out) = state.timeline_loop_out
+                && let Some(loop_in) = state.timeline_loop_in
+                && loop_in < loop_out
+                && frame.pts >= loop_out
+                && let Some(handle) = &state.timeline_player_handle
+            {
+                handle.seek(loop_in);
+                state.timeline_playhead_secs = loop_in.as_secs_f64();
+            }
         } else {
             state.current_pts = Some(frame.pts);
         }
