@@ -116,6 +116,65 @@ fn handle_jkl_transport(state: &mut state::AppState, ctx: &egui::Context) {
     }
 }
 
+fn active_frame_duration(state: &state::AppState) -> std::time::Duration {
+    let tl_active = state
+        .timeline_player_thread
+        .as_ref()
+        .map(|h| !h.is_finished())
+        .unwrap_or(false);
+
+    let fps = if tl_active {
+        let playhead = std::time::Duration::from_secs_f64(state.timeline_playhead_secs);
+        state.timeline.tracks[..2]
+            .iter()
+            .flat_map(|t| &t.clips)
+            .find_map(|c| {
+                let src = state.clips.get(c.source_index)?;
+                let in_pt = c.in_point.unwrap_or(std::time::Duration::ZERO);
+                let eff_dur = c
+                    .out_point
+                    .map(|o| o.saturating_sub(in_pt))
+                    .unwrap_or_else(|| src.info.duration().saturating_sub(in_pt));
+                let end = c.start_on_track + eff_dur;
+                if playhead >= c.start_on_track && playhead < end {
+                    src.info.primary_video().map(|v| v.fps())
+                } else {
+                    None
+                }
+            })
+    } else {
+        state
+            .monitor_clip_index
+            .and_then(|i| state.clips.get(i))
+            .and_then(|c| c.info.primary_video())
+            .map(|v| v.fps())
+    };
+
+    let fps = fps.filter(|&f| f > 0.0).unwrap_or(30.0);
+    std::time::Duration::from_secs_f64(1.0 / fps)
+}
+
+fn handle_frame_step(state: &state::AppState, ctx: &egui::Context) {
+    if ctx.wants_keyboard_input() {
+        return;
+    }
+
+    let Some(handle) = state.jkl_active_handle() else {
+        return;
+    };
+
+    let right = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight));
+    let left = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft));
+
+    if right {
+        let frame_dur = active_frame_duration(state);
+        handle.seek(handle.current_pts() + frame_dur);
+    } else if left {
+        let frame_dur = active_frame_duration(state);
+        handle.seek(handle.current_pts().saturating_sub(frame_dur));
+    }
+}
+
 fn main() -> eframe::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     let rt = tokio::runtime::Runtime::new().map_err(|e| eframe::Error::AppCreation(Box::new(e)))?;
@@ -151,6 +210,8 @@ impl eframe::App for AvioEditorApp {
 
         // JKL transport controls (global; works in both Source Monitor and Timeline).
         handle_jkl_transport(&mut self.state, ctx);
+        // Arrow key frame stepping (while paused).
+        handle_frame_step(&self.state, ctx);
 
         // 1. Top menu bar (must come before all other panels)
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
