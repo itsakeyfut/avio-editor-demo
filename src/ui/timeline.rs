@@ -181,6 +181,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         transition_duration: tc.transition_duration,
                         source_duration: src.info.duration(),
                         fps: src.info.frame_rate().unwrap_or(30.0),
+                        gain_db: tc.gain_db,
                     }
                 };
                 let snapshot = export::ExportSnapshot {
@@ -514,6 +515,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 out_point: tc.out_point,
                 transition: tc.transition,
                 transition_duration: tc.transition_duration,
+                gain_db: tc.gain_db,
             };
             let v1: Vec<_> = state.timeline.tracks[0]
                 .clips
@@ -570,6 +572,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                             out_point: tc.out_point,
                             transition: tc.transition,
                             transition_duration: tc.transition_duration,
+                            gain_db: tc.gain_db,
                         };
                         let v1: Vec<_> = state.timeline.tracks[0]
                             .clips
@@ -681,6 +684,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
         Vec::new();
     // (track_idx, clip) — clips to insert at end of their track (paste / duplicate)
     let mut pending_inserts: Vec<(usize, state::TimelineClip)> = Vec::new();
+    // (track_idx, clip_idx, new_gain_db) — gain line drags on A1 clips
+    let mut pending_gain: Vec<(usize, usize, f32)> = Vec::new();
     // Set on clip left-click; applied after the ScrollArea.
     let mut new_selection: Option<(usize, usize)> = None;
     let active_drag = state.clip_drag.clone();
@@ -1046,6 +1051,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                 }
 
                                 // Sprite frame tooltip on hover + drag-to-reposition/trim + context menu
+                                // Registered first so the gain interaction (below) has higher priority.
                                 let clip_id = egui::Id::new(("tl_clip", track_idx, clip_i));
                                 let clip_resp =
                                     ui.interact(cr, clip_id, egui::Sense::click_and_drag());
@@ -1060,7 +1066,74 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                     ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
                                 }
 
-                                if clip_resp.drag_started() {
+                                // Gain line — A1 track only. Registered AFTER clip_resp so it
+                                // wins hover/drag priority when the pointer is over the line.
+                                // Range: −40 dB (bottom) to +12 dB (top); 0 dB at mid-height.
+                                // avio gap: per-clip gain not applied (no audio_filter() on TimelineBuilder)
+                                let gain_resp_for_clip = if track.kind == state::TrackKind::Audio1 {
+                                    const GAIN_DB_MAX: f32 = 12.0;
+                                    const GAIN_DB_MIN: f32 = -40.0;
+                                    let y_frac = if tc.gain_db >= 0.0 {
+                                        0.5 * (1.0 - tc.gain_db / GAIN_DB_MAX)
+                                    } else {
+                                        0.5 + 0.5 * (-tc.gain_db / -GAIN_DB_MIN)
+                                    };
+                                    let gain_y = cr.top() + y_frac * cr.height();
+                                    let gain_hit = egui::Rect::from_center_size(
+                                        egui::pos2(cr.center().x, gain_y),
+                                        egui::vec2(cr.width(), 8.0),
+                                    );
+                                    let gain_id = egui::Id::new(("gain_line", track_idx, clip_i));
+                                    let gain_resp =
+                                        ui.interact(gain_hit, gain_id, egui::Sense::drag());
+
+                                    if gain_resp.dragged() || gain_resp.hovered() {
+                                        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+                                    }
+                                    if gain_resp.dragged()
+                                        && let Some(ptr_y) =
+                                            ui.input(|i| i.pointer.latest_pos()).map(|p| p.y)
+                                    {
+                                        let frac =
+                                            ((ptr_y - cr.top()) / cr.height()).clamp(0.0, 1.0);
+                                        let new_gain = if frac <= 0.5 {
+                                            (0.5 - frac) / 0.5 * GAIN_DB_MAX
+                                        } else {
+                                            -((frac - 0.5) / 0.5) * (-GAIN_DB_MIN)
+                                        };
+                                        pending_gain.push((track_idx, clip_i, new_gain));
+                                    }
+
+                                    let show_label = gain_resp.hovered() || gain_resp.dragged();
+                                    let line_color = if show_label {
+                                        egui::Color32::from_rgb(255, 220, 80)
+                                    } else {
+                                        egui::Color32::from_rgba_unmultiplied(200, 180, 60, 180)
+                                    };
+                                    let clipped = ui.painter().with_clip_rect(cr);
+                                    clipped.hline(
+                                        cr.x_range(),
+                                        gain_y,
+                                        egui::Stroke::new(2.0, line_color),
+                                    );
+                                    if show_label {
+                                        clipped.text(
+                                            egui::pos2(cr.left() + 4.0, gain_y - 3.0),
+                                            egui::Align2::LEFT_BOTTOM,
+                                            format!("{:+.1} dB", tc.gain_db),
+                                            egui::FontId::monospace(10.0),
+                                            egui::Color32::from_rgb(255, 220, 80),
+                                        );
+                                    }
+                                    Some(gain_resp)
+                                } else {
+                                    None
+                                };
+
+                                let gain_consuming_drag = gain_resp_for_clip
+                                    .as_ref()
+                                    .is_some_and(|r| r.drag_started() || r.dragged());
+                                if clip_resp.drag_started() && !gain_consuming_drag {
                                     // Auto-pause so the user can edit clips and
                                     // resume from the exact same playhead frame.
                                     let is_timeline_playing = state
@@ -1597,6 +1670,13 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
         }
     }
 
+    // Apply gain line drags.
+    for (ti, ci, new_gain) in pending_gain {
+        if let Some(clip) = state.timeline.tracks[ti].clips.get_mut(ci) {
+            clip.gain_db = new_gain.clamp(-40.0, 12.0);
+        }
+    }
+
     // Apply timeline clip moves.
     for (src_track, src_clip, dst_track, new_start_secs) in pending_moves {
         if src_track == dst_track {
@@ -1637,6 +1717,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             out_point: out_pt,
             transition: None,
             transition_duration: Duration::from_millis(500),
+            gain_db: 0.0,
         };
         // Sorted insert so that out-of-order drops don't corrupt array order.
         let track = &mut state.timeline.tracks[track_idx].clips;
@@ -1748,6 +1829,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 out_point: right_out,
                 transition: None,
                 transition_duration,
+                gain_db: state.timeline.tracks[ti].clips[ci].gain_db,
             };
             state.timeline.tracks[ti].clips.insert(ci + 1, right);
         }

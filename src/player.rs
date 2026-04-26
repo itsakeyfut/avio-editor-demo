@@ -15,6 +15,8 @@ pub struct TrackClipData {
     pub out_point: Option<Duration>,
     pub transition: Option<avio::XfadeTransition>,
     pub transition_duration: Duration,
+    /// Per-clip audio gain in dB (`0.0` = unity). Forwarded to `Clip::volume_db`.
+    pub gain_db: f32,
 }
 
 // ── EguiFrameSink ─────────────────────────────────────────────────────────────
@@ -376,6 +378,9 @@ pub fn spawn_timeline_player(
             let mut c = avio::Clip::new(&tc.path).offset(tc.start_on_track);
             c.in_point = tc.in_point;
             c.out_point = tc.out_point;
+            if tc.gain_db != 0.0 {
+                c = c.volume(tc.gain_db as f64);
+            }
             if let Some(kind) = tc.transition {
                 c = c.with_transition(kind, tc.transition_duration);
             }
