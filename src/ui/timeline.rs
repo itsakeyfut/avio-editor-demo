@@ -4,6 +4,150 @@ use std::time::Duration;
 use crate::presets::PresetFile;
 use crate::{export, player, state};
 
+/// Compute snapped, overlap-free `start_on_track` (seconds) for a dragged clip.
+///
+/// Snaps the clip's left or right edge to any nearby edge within `snap_px`
+/// pixels, then resolves any remaining overlap by pushing the clip to the
+/// nearest non-overlapping position.
+/// Snap a single trim edge (pixel x) to the nearest clip edge on the same track
+/// within `snap_px` pixels. Returns the snapped pixel position.
+#[allow(clippy::too_many_arguments)]
+fn snap_trim_edge(
+    raw_x: f32,
+    track_idx: usize,
+    clip_i: usize,
+    tracks: &[state::Track],
+    clips_info: &[state::ImportedClip],
+    snap_px: f32,
+    lane_left: f32,
+    pps: f32,
+) -> f32 {
+    let mut best_x = raw_x;
+    let mut best_dist = snap_px + f32::EPSILON;
+
+    // Snap to timeline origin.
+    let d = (raw_x - lane_left).abs();
+    if d < best_dist {
+        best_dist = d;
+        best_x = lane_left;
+    }
+
+    if let Some(track) = tracks.get(track_idx) {
+        for (ci, clip) in track.clips.iter().enumerate() {
+            if ci == clip_i {
+                continue;
+            }
+            let Some(src) = clips_info.get(clip.source_index) else {
+                continue;
+            };
+            let dur = match (clip.in_point, clip.out_point) {
+                (Some(i), Some(o)) if o > i => (o - i).as_secs_f32(),
+                (None, Some(o)) => o.as_secs_f32(),
+                (Some(i), None) => src.info.duration().saturating_sub(i).as_secs_f32(),
+                _ => src.info.duration().as_secs_f32(),
+            };
+            let c_left = lane_left + clip.start_on_track.as_secs_f32() * pps;
+            let c_right = c_left + dur * pps;
+
+            for &edge_x in &[c_left, c_right] {
+                let d = (raw_x - edge_x).abs();
+                if d < best_dist {
+                    best_dist = d;
+                    best_x = edge_x;
+                }
+            }
+        }
+    }
+
+    best_x
+}
+
+#[allow(clippy::too_many_arguments)]
+fn snap_clip_start(
+    raw_start: f32,
+    clip_dur: f32,
+    dst_track: usize,
+    src_track: usize,
+    src_clip: usize,
+    tracks: &[state::Track],
+    clips_info: &[state::ImportedClip],
+    snap_px: f32,
+    pps: f32,
+) -> f32 {
+    let snap_secs = snap_px / pps;
+    let raw_end = raw_start + clip_dur;
+
+    // Build (start, end) pairs for every clip on dst_track except the dragged clip.
+    let others: Vec<(f32, f32)> = tracks
+        .get(dst_track)
+        .map(|t| {
+            t.clips
+                .iter()
+                .enumerate()
+                .filter(|(ci, _)| !(dst_track == src_track && *ci == src_clip))
+                .filter_map(|(_, c)| {
+                    clips_info.get(c.source_index).map(|s| {
+                        let dur = match (c.in_point, c.out_point) {
+                            (Some(i), Some(o)) if o > i => (o - i).as_secs_f32(),
+                            (None, Some(o)) => o.as_secs_f32(),
+                            (Some(i), None) => s.info.duration().saturating_sub(i).as_secs_f32(),
+                            _ => s.info.duration().as_secs_f32(),
+                        };
+                        let cs = c.start_on_track.as_secs_f32();
+                        (cs, cs + dur)
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Find best snap candidate within snap_secs.
+    let mut best = raw_start;
+    let mut best_dist = snap_secs + f32::EPSILON;
+
+    // Snap left edge to timeline origin.
+    if raw_start < best_dist {
+        best_dist = raw_start;
+        best = 0.0;
+    }
+    for &(c_start, c_end) in &others {
+        // Our left edge near their right edge.
+        let d = (raw_start - c_end).abs();
+        if d < best_dist {
+            best_dist = d;
+            best = c_end;
+        }
+        // Our right edge near their left edge.
+        let d = (raw_end - c_start).abs();
+        if d < best_dist {
+            best_dist = d;
+            best = c_start - clip_dur;
+        }
+    }
+
+    let mut pos = best.max(0.0);
+
+    // Iteratively push out of any remaining overlap.
+    for _ in 0..=others.len() {
+        let pos_end = pos + clip_dur;
+        let Some(&(c_start, c_end)) = others
+            .iter()
+            .find(|&&(cs, ce)| pos < ce - 0.001 && pos_end > cs + 0.001)
+        else {
+            break;
+        };
+        let left_pos = (c_start - clip_dur).max(0.0);
+        let right_pos = c_end;
+        pos = if (left_pos - raw_start).abs() <= (right_pos - raw_start).abs() {
+            left_pos
+        } else {
+            right_pos
+        };
+    }
+
+    pos
+}
+
 pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
 
@@ -407,10 +551,13 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             if ui.button(pause_label).clicked() {
                 if is_paused {
                     if state.clips_moved_while_paused {
-                        // One or more clips were repositioned while paused.
-                        // Send the updated layout to the running runner so it
-                        // updates positions in place and seeks to the last known
-                        // PTS — no teardown needed.
+                        // Clips were added, removed, or repositioned while paused.
+                        // update_layout_in_place fails when the clip count changed
+                        // (split, duplicate, delete), so always fully restart the
+                        // runner from the current playhead position.
+                        let resume_pos =
+                            Duration::from_secs_f64(state.timeline_playhead_secs.max(0.0));
+                        state.stop_timeline_player();
                         let clips = &state.clips;
                         let make_tcd = |tc: &state::TimelineClip| player::TrackClipData {
                             path: clips[tc.source_index].path.clone(),
@@ -435,20 +582,28 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                             .iter()
                             .map(make_tcd)
                             .collect();
-                        match player::build_timeline(v1, v2, a1) {
-                            Ok(tl) => {
-                                if let Some(h) = &state.timeline_player_handle {
-                                    h.update_timeline(tl);
-                                }
-                            }
-                            Err(e) => log::warn!("build_timeline failed: {e}"),
-                        }
+                        state
+                            .cpal_rate
+                            .store(1.0f64.to_bits(), std::sync::atomic::Ordering::Relaxed);
+                        let (thread, handle_rx) = player::spawn_timeline_player(
+                            v1,
+                            v2,
+                            a1,
+                            Arc::clone(&state.frame_handle),
+                            ui.ctx().clone(),
+                            resume_pos,
+                            Arc::clone(&state.cpal_rate),
+                        );
+                        state.timeline_player_thread = Some(thread);
+                        state.timeline_pending_handle_rx = Some(handle_rx);
                         state.clips_moved_while_paused = false;
+                        state.timeline_is_paused = false;
+                    } else {
+                        if let Some(h) = &state.timeline_player_handle {
+                            h.play();
+                        }
+                        state.timeline_is_paused = false;
                     }
-                    if let Some(h) = &state.timeline_player_handle {
-                        h.play();
-                    }
-                    state.timeline_is_paused = false;
                 } else if let Some(h) = &state.timeline_player_handle {
                     h.pause();
                     state.timeline_is_paused = true;
@@ -903,10 +1058,20 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                                                 .as_secs_f32()
                                                                 - eff_in.as_secs_f32())
                                                                 * pps;
-                                                        let new_right = ptr.x.clamp(
-                                                            orig_x + one_frame_sec * pps,
-                                                            max_right,
+                                                        let min_right =
+                                                            orig_x + one_frame_sec * pps;
+                                                        let snapped = snap_trim_edge(
+                                                            ptr.x,
+                                                            track_idx,
+                                                            clip_i,
+                                                            &state.timeline.tracks,
+                                                            &state.clips,
+                                                            20.0,
+                                                            lane_rect.left(),
+                                                            pps,
                                                         );
+                                                        let new_right =
+                                                            snapped.clamp(min_right, max_right);
                                                         let new_out = eff_in
                                                             + Duration::from_secs_f32(
                                                                 (new_right - orig_x) / pps,
@@ -929,8 +1094,18 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                                             lane_rect.left().max(source_left_x);
                                                         let max_left =
                                                             right_x - one_frame_sec * pps;
+                                                        let snapped = snap_trim_edge(
+                                                            ptr.x,
+                                                            track_idx,
+                                                            clip_i,
+                                                            &state.timeline.tracks,
+                                                            &state.clips,
+                                                            20.0,
+                                                            lane_rect.left(),
+                                                            pps,
+                                                        );
                                                         let new_left =
-                                                            ptr.x.clamp(min_left, max_left);
+                                                            snapped.clamp(min_left, max_left);
                                                         let new_start_secs =
                                                             (new_left - lane_rect.left()) / pps;
                                                         let delta = new_start_secs
@@ -965,9 +1140,20 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                                 as isize)
                                                 .clamp(0, tracks_count as isize - 1)
                                                 as usize;
-                                            let new_start = ((ptr.x - lane_rect.left()) / pps
+                                            let raw_start = ((ptr.x - lane_rect.left()) / pps
                                                 - drag.grab_offset_secs)
                                                 .max(0.0);
+                                            let new_start = snap_clip_start(
+                                                raw_start,
+                                                eff_dur.as_secs_f32(),
+                                                dst_track,
+                                                drag.src_track,
+                                                drag.src_clip,
+                                                &state.timeline.tracks,
+                                                &state.clips,
+                                                20.0,
+                                                pps,
+                                            );
                                             pending_moves.push((
                                                 drag.src_track,
                                                 drag.src_clip,
@@ -1159,7 +1345,21 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         .clamp(0, tracks_count as isize - 1)
                         as usize;
 
-                    let ghost_left = ptr.x - drag.grab_offset_secs * pps;
+                    let raw_start_secs =
+                        ((ptr.x - timeline_left) / pps - drag.grab_offset_secs).max(0.0);
+                    let snapped_start = snap_clip_start(
+                        raw_start_secs,
+                        ghost_dur,
+                        dst_ti,
+                        drag.src_track,
+                        drag.src_clip,
+                        &state.timeline.tracks,
+                        &state.clips,
+                        20.0,
+                        pps,
+                    );
+                    let is_snapping = (snapped_start - raw_start_secs).abs() > 0.001;
+                    let ghost_left = timeline_left + snapped_start * pps;
                     let ghost_top = tracks_top + dst_ti as f32 * TRACK_HEIGHT;
                     let ghost_rect = egui::Rect::from_min_size(
                         egui::pos2(ghost_left, ghost_top),
@@ -1170,10 +1370,15 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         4.0,
                         egui::Color32::from_rgba_premultiplied(100, 160, 220, 100),
                     );
+                    let snap_color = if is_snapping {
+                        egui::Color32::from_rgb(255, 200, 0)
+                    } else {
+                        egui::Color32::WHITE
+                    };
                     ui.painter().rect_stroke(
                         ghost_rect,
                         4.0,
-                        egui::Stroke::new(1.5, egui::Color32::WHITE),
+                        egui::Stroke::new(1.5, snap_color),
                         egui::StrokeKind::Outside,
                     );
                 }
@@ -1334,10 +1539,20 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             if let Some(clip) = state.timeline.tracks[src_track].clips.get_mut(src_clip) {
                 clip.start_on_track = Duration::from_secs_f32(new_start_secs);
             }
+            // Re-sort so TimelineRunner always sees clips in timeline order.
+            state.timeline.tracks[src_track]
+                .clips
+                .sort_by_key(|c| c.start_on_track);
         } else if src_clip < state.timeline.tracks[src_track].clips.len() {
             let mut clip = state.timeline.tracks[src_track].clips.remove(src_clip);
             clip.start_on_track = Duration::from_secs_f32(new_start_secs);
-            state.timeline.tracks[dst_track].clips.push(clip);
+            // Sorted insert instead of push to maintain timeline order.
+            let track = &mut state.timeline.tracks[dst_track].clips;
+            let pos = track
+                .iter()
+                .position(|c| c.start_on_track > clip.start_on_track)
+                .unwrap_or(track.len());
+            track.insert(pos, clip);
         }
     }
     if had_moves {
@@ -1351,16 +1566,21 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             .get(clip_idx)
             .map(|c| (c.in_point, c.out_point))
             .unwrap_or_default();
-        state.timeline.tracks[track_idx]
-            .clips
-            .push(state::TimelineClip {
-                source_index: clip_idx,
-                start_on_track: Duration::from_secs_f32(start_secs),
-                in_point: in_pt,
-                out_point: out_pt,
-                transition: None,
-                transition_duration: Duration::from_millis(500),
-            });
+        let new_clip = state::TimelineClip {
+            source_index: clip_idx,
+            start_on_track: Duration::from_secs_f32(start_secs),
+            in_point: in_pt,
+            out_point: out_pt,
+            transition: None,
+            transition_duration: Duration::from_millis(500),
+        };
+        // Sorted insert so that out-of-order drops don't corrupt array order.
+        let track = &mut state.timeline.tracks[track_idx].clips;
+        let pos = track
+            .iter()
+            .position(|c| c.start_on_track > new_clip.start_on_track)
+            .unwrap_or(track.len());
+        track.insert(pos, new_clip);
     }
     for (track_idx, clip_i, transition, duration) in pending_transitions {
         if let Some(clip) = state.timeline.tracks[track_idx].clips.get_mut(clip_i) {
@@ -1399,9 +1619,17 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
         state.timeline_selected = None;
     }
 
-    // Apply paste / duplicate inserts.
+    // Apply paste / duplicate inserts, maintaining start_on_track order.
     for (ti, clip) in pending_inserts {
-        state.timeline.tracks[ti].clips.push(clip);
+        let track = &mut state.timeline.tracks[ti].clips;
+        let pos = track
+            .iter()
+            .position(|c| c.start_on_track > clip.start_on_track)
+            .unwrap_or(track.len());
+        track.insert(pos, clip);
+    }
+    if (had_paste || had_duplicate) && state.timeline_is_paused {
+        state.clips_moved_while_paused = true;
     }
 
     // Split clips at playhead (C key or "✂ Split" button).

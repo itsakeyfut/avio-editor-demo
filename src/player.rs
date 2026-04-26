@@ -354,46 +354,6 @@ pub fn spawn_player(
     (thread, handle_rx, proxy_rx)
 }
 
-// ── build_timeline ─────────────────────────────────────────────────────────────
-
-/// Constructs an `avio::Timeline` from `TrackClipData` lists without spawning a
-/// player thread. Used by the Resume handler when clips were repositioned while
-/// paused: instead of tearing down and respawning `TimelineRunner`, the caller
-/// builds the updated timeline and calls `handle.update_timeline()`.
-pub fn build_timeline(
-    v1: Vec<TrackClipData>,
-    v2: Vec<TrackClipData>,
-    a1: Vec<TrackClipData>,
-) -> Result<avio::Timeline, String> {
-    let make_clip = |tc: TrackClipData| -> avio::Clip {
-        let mut c = avio::Clip::new(&tc.path).offset(tc.start_on_track);
-        c.in_point = tc.in_point;
-        c.out_point = tc.out_point;
-        if let Some(kind) = tc.transition {
-            c = c.with_transition(kind, tc.transition_duration);
-        }
-        c
-    };
-
-    let v1_clips: Vec<avio::Clip> = v1.into_iter().map(make_clip).collect();
-    let v2_clips: Vec<avio::Clip> = v2.into_iter().map(make_clip).collect();
-    let a1_clips: Vec<avio::Clip> = a1.into_iter().map(make_clip).collect();
-
-    if v1_clips.is_empty() {
-        return Err("no V1 clips".into());
-    }
-
-    let mut builder = avio::Timeline::builder().video_track(v1_clips);
-    if !v2_clips.is_empty() {
-        builder = builder.video_track(v2_clips);
-    }
-    if !a1_clips.is_empty() {
-        builder = builder.audio_track(a1_clips);
-    }
-
-    builder.build().map_err(|e| e.to_string())
-}
-
 // ── spawn_timeline_player ──────────────────────────────────────────────────────
 
 /// Spawns a background thread running `TimelineRunner::run()` for multi-track playback.
