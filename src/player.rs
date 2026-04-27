@@ -17,6 +17,10 @@ pub struct TrackClipData {
     pub transition_duration: Duration,
     /// Per-clip audio gain in dB (`0.0` = unity). Forwarded to `Clip::volume_db`.
     pub gain_db: f32,
+    /// Audio fade-in duration (`Duration::ZERO` = no fade).
+    pub fade_in: Duration,
+    /// Audio fade-out duration (`Duration::ZERO` = no fade).
+    pub fade_out: Duration,
 }
 
 // ── EguiFrameSink ─────────────────────────────────────────────────────────────
@@ -380,6 +384,12 @@ pub fn spawn_timeline_player(
             c.out_point = tc.out_point;
             if tc.gain_db != 0.0 {
                 c = c.volume(tc.gain_db as f64);
+            }
+            if tc.fade_in > Duration::ZERO {
+                c = c.with_fade_in(tc.fade_in);
+            }
+            if tc.fade_out > Duration::ZERO {
+                c = c.with_fade_out(tc.fade_out);
             }
             if let Some(kind) = tc.transition {
                 c = c.with_transition(kind, tc.transition_duration);
