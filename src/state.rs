@@ -365,6 +365,8 @@ pub enum TrackKind {
 pub struct Track {
     pub kind: TrackKind,
     pub clips: Vec<TimelineClip>,
+    pub muted: bool,
+    pub soloed: bool,
 }
 
 #[derive(Clone, PartialEq)]
@@ -401,14 +403,20 @@ impl Default for TimelineState {
                 Track {
                     kind: TrackKind::Video1,
                     clips: Vec::new(),
+                    muted: false,
+                    soloed: false,
                 },
                 Track {
                     kind: TrackKind::Video2,
                     clips: Vec::new(),
+                    muted: false,
+                    soloed: false,
                 },
                 Track {
                     kind: TrackKind::Audio1,
                     clips: Vec::new(),
+                    muted: false,
+                    soloed: false,
                 },
             ],
             pixels_per_second: 60.0,

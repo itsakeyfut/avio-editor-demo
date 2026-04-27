@@ -4,6 +4,19 @@ use std::time::Duration;
 use crate::presets::PresetFile;
 use crate::{export, player, state};
 
+/// Returns `true` when track `idx` should contribute clips to the player/exporter.
+///
+/// Solo takes priority: if any track is soloed, only soloed tracks are active.
+/// Otherwise, a track is active unless it is muted.
+fn track_is_active(tracks: &[state::Track; 3], idx: usize) -> bool {
+    let any_solo = tracks.iter().any(|t| t.soloed);
+    if any_solo {
+        tracks[idx].soloed
+    } else {
+        !tracks[idx].muted
+    }
+}
+
 /// Compute snapped, overlap-free `start_on_track` (seconds) for a dragged clip.
 ///
 /// Snaps the clip's left or right edge to any nearby edge within `snap_px`
@@ -186,22 +199,23 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         fade_out: tc.fade_out,
                     }
                 };
+                let tracks = &state.timeline.tracks;
                 let snapshot = export::ExportSnapshot {
-                    v1_clips: state.timeline.tracks[0]
-                        .clips
-                        .iter()
-                        .map(make_clip)
-                        .collect(),
-                    v2_clips: state.timeline.tracks[1]
-                        .clips
-                        .iter()
-                        .map(make_clip)
-                        .collect(),
-                    a1_clips: state.timeline.tracks[2]
-                        .clips
-                        .iter()
-                        .map(make_clip)
-                        .collect(),
+                    v1_clips: if track_is_active(tracks, 0) {
+                        tracks[0].clips.iter().map(make_clip).collect()
+                    } else {
+                        vec![]
+                    },
+                    v2_clips: if track_is_active(tracks, 1) {
+                        tracks[1].clips.iter().map(make_clip).collect()
+                    } else {
+                        vec![]
+                    },
+                    a1_clips: if track_is_active(tracks, 2) {
+                        tracks[2].clips.iter().map(make_clip).collect()
+                    } else {
+                        vec![]
+                    },
                     encoder_config: state.encoder_config.clone(),
                     export_filters: state.export_filters.clone(),
                     loudness_normalize: state.loudness_normalize,
@@ -521,21 +535,22 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 fade_in: tc.fade_in,
                 fade_out: tc.fade_out,
             };
-            let v1: Vec<_> = state.timeline.tracks[0]
-                .clips
-                .iter()
-                .map(make_tcd)
-                .collect();
-            let v2: Vec<_> = state.timeline.tracks[1]
-                .clips
-                .iter()
-                .map(make_tcd)
-                .collect();
-            let a1: Vec<_> = state.timeline.tracks[2]
-                .clips
-                .iter()
-                .map(make_tcd)
-                .collect();
+            let tracks = &state.timeline.tracks;
+            let v1: Vec<_> = if track_is_active(tracks, 0) {
+                tracks[0].clips.iter().map(make_tcd).collect()
+            } else {
+                vec![]
+            };
+            let v2: Vec<_> = if track_is_active(tracks, 1) {
+                tracks[1].clips.iter().map(make_tcd).collect()
+            } else {
+                vec![]
+            };
+            let a1: Vec<_> = if track_is_active(tracks, 2) {
+                tracks[2].clips.iter().map(make_tcd).collect()
+            } else {
+                vec![]
+            };
 
             let start = Duration::from_secs_f64(state.timeline_playhead_secs.max(0.0));
             // Timeline always plays at 1×; reset cpal_rate to 1.0
@@ -580,21 +595,22 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                             fade_in: tc.fade_in,
                             fade_out: tc.fade_out,
                         };
-                        let v1: Vec<_> = state.timeline.tracks[0]
-                            .clips
-                            .iter()
-                            .map(make_tcd)
-                            .collect();
-                        let v2: Vec<_> = state.timeline.tracks[1]
-                            .clips
-                            .iter()
-                            .map(make_tcd)
-                            .collect();
-                        let a1: Vec<_> = state.timeline.tracks[2]
-                            .clips
-                            .iter()
-                            .map(make_tcd)
-                            .collect();
+                        let tracks = &state.timeline.tracks;
+                        let v1: Vec<_> = if track_is_active(tracks, 0) {
+                            tracks[0].clips.iter().map(make_tcd).collect()
+                        } else {
+                            vec![]
+                        };
+                        let v2: Vec<_> = if track_is_active(tracks, 1) {
+                            tracks[1].clips.iter().map(make_tcd).collect()
+                        } else {
+                            vec![]
+                        };
+                        let a1: Vec<_> = if track_is_active(tracks, 2) {
+                            tracks[2].clips.iter().map(make_tcd).collect()
+                        } else {
+                            vec![]
+                        };
                         state
                             .cpal_rate
                             .store(1.0f64.to_bits(), std::sync::atomic::Ordering::Relaxed);
@@ -652,7 +668,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
     ui.separator();
 
     const TRACK_HEIGHT: f32 = 40.0;
-    const LABEL_WIDTH: f32 = 40.0;
+    const LABEL_WIDTH: f32 = 80.0;
     const TRIM_HANDLE_PX: f32 = 6.0;
 
     let pps = state.timeline.pixels_per_second;
@@ -694,6 +710,9 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
     let mut pending_gain: Vec<(usize, usize, f32)> = Vec::new();
     // (track_idx, clip_idx, new_fade_in, new_fade_out) — fade handle drags on A1 clips
     let mut pending_fades: Vec<(usize, usize, Option<Duration>, Option<Duration>)> = Vec::new();
+    // track_idx — M or S button clicked this frame
+    let mut pending_mute_toggle: Option<usize> = None;
+    let mut pending_solo_toggle: Option<usize> = None;
     // Set on clip left-click; applied after the ScrollArea.
     let mut new_selection: Option<(usize, usize)> = None;
     let active_drag = state.clip_drag.clone();
@@ -820,15 +839,45 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             // ── Track lanes ────────────────────────────────────────────────────
             for (track_idx, track) in state.timeline.tracks.iter().enumerate() {
                 ui.horizontal(|ui| {
-                    // Track label
+                    // Track label + M/S buttons
                     ui.allocate_ui_with_layout(
                         egui::vec2(LABEL_WIDTH, TRACK_HEIGHT),
-                        egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+                        egui::Layout::top_down(egui::Align::Center),
                         |ui| {
                             ui.label(match track.kind {
                                 state::TrackKind::Video1 => "V1",
                                 state::TrackKind::Video2 => "V2",
                                 state::TrackKind::Audio1 => "A1",
+                            });
+                            ui.horizontal(|ui| {
+                                let m_col = if track.muted {
+                                    egui::Color32::from_rgb(240, 160, 40)
+                                } else {
+                                    egui::Color32::GRAY
+                                };
+                                if ui
+                                    .add(egui::Button::new(
+                                        egui::RichText::new("M").color(m_col).small(),
+                                    ))
+                                    .on_hover_text("Mute")
+                                    .clicked()
+                                {
+                                    pending_mute_toggle = Some(track_idx);
+                                }
+                                let s_col = if track.soloed {
+                                    egui::Color32::from_rgb(255, 220, 0)
+                                } else {
+                                    egui::Color32::GRAY
+                                };
+                                if ui
+                                    .add(egui::Button::new(
+                                        egui::RichText::new("S").color(s_col).small(),
+                                    ))
+                                    .on_hover_text("Solo")
+                                    .clicked()
+                                {
+                                    pending_solo_toggle = Some(track_idx);
+                                }
                             });
                         },
                     );
@@ -1889,6 +1938,72 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             if let Some(fo) = new_fo {
                 clip.fade_out = fo;
             }
+        }
+    }
+
+    // Apply mute/solo toggles and restart the player if it is currently running.
+    let mute_solo_changed = pending_mute_toggle.is_some() || pending_solo_toggle.is_some();
+    if let Some(ti) = pending_mute_toggle {
+        state.timeline.tracks[ti].muted = !state.timeline.tracks[ti].muted;
+    }
+    if let Some(ti) = pending_solo_toggle {
+        state.timeline.tracks[ti].soloed = !state.timeline.tracks[ti].soloed;
+    }
+    if mute_solo_changed {
+        let is_playing = state
+            .timeline_player_thread
+            .as_ref()
+            .map(|h| !h.is_finished())
+            .unwrap_or(false);
+        if is_playing && !state.timeline_is_paused {
+            // Restart the player immediately so the new mute/solo state is heard.
+            let resume_pos = Duration::from_secs_f64(state.timeline_playhead_secs.max(0.0));
+            state.stop_timeline_player();
+            let clips = &state.clips;
+            let make_tcd = |tc: &state::TimelineClip| player::TrackClipData {
+                path: clips[tc.source_index].path.clone(),
+                start_on_track: tc.start_on_track,
+                in_point: tc.in_point,
+                out_point: tc.out_point,
+                transition: tc.transition,
+                transition_duration: tc.transition_duration,
+                gain_db: tc.gain_db,
+                fade_in: tc.fade_in,
+                fade_out: tc.fade_out,
+            };
+            let tracks = &state.timeline.tracks;
+            let v1: Vec<_> = if track_is_active(tracks, 0) {
+                tracks[0].clips.iter().map(make_tcd).collect()
+            } else {
+                vec![]
+            };
+            let v2: Vec<_> = if track_is_active(tracks, 1) {
+                tracks[1].clips.iter().map(make_tcd).collect()
+            } else {
+                vec![]
+            };
+            let a1: Vec<_> = if track_is_active(tracks, 2) {
+                tracks[2].clips.iter().map(make_tcd).collect()
+            } else {
+                vec![]
+            };
+            state
+                .cpal_rate
+                .store(1.0f64.to_bits(), std::sync::atomic::Ordering::Relaxed);
+            let (thread, handle_rx) = player::spawn_timeline_player(
+                v1,
+                v2,
+                a1,
+                Arc::clone(&state.frame_handle),
+                ctx,
+                resume_pos,
+                Arc::clone(&state.cpal_rate),
+            );
+            state.timeline_player_thread = Some(thread);
+            state.timeline_pending_handle_rx = Some(handle_rx);
+        } else {
+            // Paused or stopped: mark as dirty so Resume rebuilds with correct state.
+            state.clips_moved_while_paused = true;
         }
     }
 
