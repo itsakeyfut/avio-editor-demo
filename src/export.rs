@@ -19,6 +19,10 @@ pub struct ExportClip {
     pub fps: f64,
     /// Per-clip audio gain in dB (`0.0` = unity). Applied via `Clip::volume_db` on A1 clips.
     pub gain_db: f32,
+    /// Audio fade-in duration (`Duration::ZERO` = no fade).
+    pub fade_in: Duration,
+    /// Audio fade-out duration (`Duration::ZERO` = no fade).
+    pub fade_out: Duration,
 }
 
 /// Send-safe snapshot of all timeline tracks, constructed on the main thread
@@ -70,6 +74,16 @@ fn clips_to_avio(clips: Vec<ExportClip>) -> Vec<avio::Clip> {
             };
             let clip = if c.gain_db != 0.0 {
                 clip.volume(c.gain_db as f64)
+            } else {
+                clip
+            };
+            let clip = if c.fade_in > Duration::ZERO {
+                clip.with_fade_in(c.fade_in)
+            } else {
+                clip
+            };
+            let clip = if c.fade_out > Duration::ZERO {
+                clip.with_fade_out(c.fade_out)
             } else {
                 clip
             };

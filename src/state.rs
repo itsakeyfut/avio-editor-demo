@@ -381,6 +381,12 @@ pub struct TimelineClip {
     /// Per-clip audio gain in dB. Range: −40 dB to +12 dB. Default: 0.0 (unity).
     /// avio gap: per-clip gain not applied (no audio_filter() on TimelineBuilder)
     pub gain_db: f32,
+    /// Fade-in duration at the start of the clip. Default: zero (no fade).
+    /// avio gap: per-clip fade not applied during render (no audio_filter() on TimelineBuilder)
+    pub fade_in: std::time::Duration,
+    /// Fade-out duration at the end of the clip. Default: zero (no fade).
+    /// avio gap: per-clip fade not applied during render (no audio_filter() on TimelineBuilder)
+    pub fade_out: std::time::Duration,
 }
 
 pub struct TimelineState {

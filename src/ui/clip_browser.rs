@@ -403,6 +403,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
                 transition: None,
                 transition_duration: Duration::from_millis(500),
                 gain_db: 0.0,
+                fade_in: Duration::ZERO,
+                fade_out: Duration::ZERO,
             });
         }
         let can_trim = clip.in_point.is_some() && clip.out_point.is_some();

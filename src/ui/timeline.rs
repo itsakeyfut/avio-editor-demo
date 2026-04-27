@@ -182,6 +182,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         source_duration: src.info.duration(),
                         fps: src.info.frame_rate().unwrap_or(30.0),
                         gain_db: tc.gain_db,
+                        fade_in: tc.fade_in,
+                        fade_out: tc.fade_out,
                     }
                 };
                 let snapshot = export::ExportSnapshot {
@@ -516,6 +518,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 transition: tc.transition,
                 transition_duration: tc.transition_duration,
                 gain_db: tc.gain_db,
+                fade_in: tc.fade_in,
+                fade_out: tc.fade_out,
             };
             let v1: Vec<_> = state.timeline.tracks[0]
                 .clips
@@ -573,6 +577,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                             transition: tc.transition,
                             transition_duration: tc.transition_duration,
                             gain_db: tc.gain_db,
+                            fade_in: tc.fade_in,
+                            fade_out: tc.fade_out,
                         };
                         let v1: Vec<_> = state.timeline.tracks[0]
                             .clips
@@ -686,6 +692,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
     let mut pending_inserts: Vec<(usize, state::TimelineClip)> = Vec::new();
     // (track_idx, clip_idx, new_gain_db) — gain line drags on A1 clips
     let mut pending_gain: Vec<(usize, usize, f32)> = Vec::new();
+    // (track_idx, clip_idx, new_fade_in, new_fade_out) — fade handle drags on A1 clips
+    let mut pending_fades: Vec<(usize, usize, Option<Duration>, Option<Duration>)> = Vec::new();
     // Set on clip left-click; applied after the ScrollArea.
     let mut new_selection: Option<(usize, usize)> = None;
     let active_drag = state.clip_drag.clone();
@@ -1050,6 +1058,59 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                     }
                                 }
 
+                                // Fade ramps — A1 track only. Painted before interaction widgets
+                                // so the triangular overlays appear under any interactive chrome.
+                                // avio gap: per-clip fade-in/out not applied during render
+                                if track.kind == state::TrackKind::Audio1 {
+                                    let clipped = ui.painter().with_clip_rect(cr);
+                                    let fade_color =
+                                        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 140);
+                                    let line_color =
+                                        egui::Color32::from_rgba_unmultiplied(180, 220, 255, 220);
+
+                                    // Fade-in triangle
+                                    if tc.fade_in > Duration::ZERO {
+                                        let fi_px =
+                                            (tc.fade_in.as_secs_f32() * pps).min(cr.width());
+                                        let x0 = cr.left();
+                                        let x1 = (cr.left() + fi_px).min(cr.right());
+                                        clipped.add(egui::Shape::convex_polygon(
+                                            vec![
+                                                egui::pos2(x0, cr.top()),
+                                                egui::pos2(x1, cr.top()),
+                                                egui::pos2(x0, cr.bottom()),
+                                            ],
+                                            fade_color,
+                                            egui::Stroke::NONE,
+                                        ));
+                                        clipped.line_segment(
+                                            [egui::pos2(x0, cr.bottom()), egui::pos2(x1, cr.top())],
+                                            egui::Stroke::new(1.5, line_color),
+                                        );
+                                    }
+
+                                    // Fade-out triangle
+                                    if tc.fade_out > Duration::ZERO {
+                                        let fo_px =
+                                            (tc.fade_out.as_secs_f32() * pps).min(cr.width());
+                                        let x1 = cr.right();
+                                        let x0 = (cr.right() - fo_px).max(cr.left());
+                                        clipped.add(egui::Shape::convex_polygon(
+                                            vec![
+                                                egui::pos2(x0, cr.top()),
+                                                egui::pos2(x1, cr.top()),
+                                                egui::pos2(x1, cr.bottom()),
+                                            ],
+                                            fade_color,
+                                            egui::Stroke::NONE,
+                                        ));
+                                        clipped.line_segment(
+                                            [egui::pos2(x0, cr.top()), egui::pos2(x1, cr.bottom())],
+                                            egui::Stroke::new(1.5, line_color),
+                                        );
+                                    }
+                                }
+
                                 // Sprite frame tooltip on hover + drag-to-reposition/trim + context menu
                                 // Registered first so the gain interaction (below) has higher priority.
                                 let clip_id = egui::Id::new(("tl_clip", track_idx, clip_i));
@@ -1130,10 +1191,152 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                     None
                                 };
 
+                                // Fade handles — A1 track only. Registered AFTER gain_resp for
+                                // the highest interaction priority on the clip rect.
+                                let fade_consuming_drag = if track.kind == state::TrackKind::Audio1
+                                {
+                                    const FADE_HANDLE_PX: f32 = 10.0;
+                                    let half = cr.height() / 2.0;
+                                    let eff_dur_secs = {
+                                        let eff_in =
+                                            tc.in_point.unwrap_or(Duration::ZERO).as_secs_f32();
+                                        let eff_out = tc
+                                            .out_point
+                                            .unwrap_or(source.info.duration())
+                                            .as_secs_f32();
+                                        (eff_out - eff_in).max(0.001)
+                                    };
+                                    let max_fade_secs = eff_dur_secs / 2.0;
+
+                                    // Fade-in handle: small triangle at leading edge
+                                    let fi_px = (tc.fade_in.as_secs_f32() * pps).min(cr.width());
+                                    let fi_handle_center =
+                                        egui::pos2(cr.left() + fi_px, cr.top() + half);
+                                    let fi_hit = egui::Rect::from_center_size(
+                                        fi_handle_center,
+                                        egui::vec2(FADE_HANDLE_PX, cr.height()),
+                                    );
+                                    let fi_id =
+                                        egui::Id::new(("fade_in_handle", track_idx, clip_i));
+                                    let fi_resp = ui.interact(fi_hit, fi_id, egui::Sense::drag());
+                                    if fi_resp.hovered() || fi_resp.dragged() {
+                                        ui.ctx()
+                                            .set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                                    }
+                                    if fi_resp.dragged()
+                                        && let Some(ptr_x) =
+                                            ui.input(|i| i.pointer.latest_pos()).map(|p| p.x)
+                                    {
+                                        let new_fi_secs =
+                                            ((ptr_x - cr.left()) / pps).max(0.0).min(max_fade_secs);
+                                        pending_fades.push((
+                                            track_idx,
+                                            clip_i,
+                                            Some(Duration::from_secs_f32(new_fi_secs)),
+                                            None,
+                                        ));
+                                    }
+
+                                    // Fade-out handle: small triangle at trailing edge
+                                    let fo_px = (tc.fade_out.as_secs_f32() * pps).min(cr.width());
+                                    let fo_handle_center =
+                                        egui::pos2(cr.right() - fo_px, cr.top() + half);
+                                    let fo_hit = egui::Rect::from_center_size(
+                                        fo_handle_center,
+                                        egui::vec2(FADE_HANDLE_PX, cr.height()),
+                                    );
+                                    let fo_id =
+                                        egui::Id::new(("fade_out_handle", track_idx, clip_i));
+                                    let fo_resp = ui.interact(fo_hit, fo_id, egui::Sense::drag());
+                                    if fo_resp.hovered() || fo_resp.dragged() {
+                                        ui.ctx()
+                                            .set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                                    }
+                                    if fo_resp.dragged()
+                                        && let Some(ptr_x) =
+                                            ui.input(|i| i.pointer.latest_pos()).map(|p| p.x)
+                                    {
+                                        let new_fo_secs = ((cr.right() - ptr_x) / pps)
+                                            .max(0.0)
+                                            .min(max_fade_secs);
+                                        pending_fades.push((
+                                            track_idx,
+                                            clip_i,
+                                            None,
+                                            Some(Duration::from_secs_f32(new_fo_secs)),
+                                        ));
+                                    }
+
+                                    // Draw handle diamonds so they're visible
+                                    let clipped = ui.painter().with_clip_rect(cr);
+                                    let handle_color =
+                                        egui::Color32::from_rgba_unmultiplied(140, 200, 255, 200);
+                                    let dia = 5.0_f32;
+                                    for (cx, is_active) in [
+                                        (
+                                            fi_handle_center.x,
+                                            fi_resp.hovered() || fi_resp.dragged(),
+                                        ),
+                                        (
+                                            fo_handle_center.x,
+                                            fo_resp.hovered() || fo_resp.dragged(),
+                                        ),
+                                    ] {
+                                        let cy = cr.top() + half;
+                                        let color = if is_active {
+                                            egui::Color32::WHITE
+                                        } else {
+                                            handle_color
+                                        };
+                                        clipped.add(egui::Shape::convex_polygon(
+                                            vec![
+                                                egui::pos2(cx, cy - dia),
+                                                egui::pos2(cx + dia, cy),
+                                                egui::pos2(cx, cy + dia),
+                                                egui::pos2(cx - dia, cy),
+                                            ],
+                                            color,
+                                            egui::Stroke::NONE,
+                                        ));
+                                    }
+
+                                    // Show labels when hovered
+                                    if fi_resp.hovered() || fi_resp.dragged() {
+                                        let clipped2 = ui.painter().with_clip_rect(cr);
+                                        clipped2.text(
+                                            egui::pos2(cr.left() + fi_px + 6.0, cr.top() + 2.0),
+                                            egui::Align2::LEFT_TOP,
+                                            format!("FI {:.2}s", tc.fade_in.as_secs_f32()),
+                                            egui::FontId::monospace(9.0),
+                                            egui::Color32::from_rgb(140, 200, 255),
+                                        );
+                                    }
+                                    if fo_resp.hovered() || fo_resp.dragged() {
+                                        let clipped2 = ui.painter().with_clip_rect(cr);
+                                        clipped2.text(
+                                            egui::pos2(cr.right() - fo_px - 6.0, cr.top() + 2.0),
+                                            egui::Align2::RIGHT_TOP,
+                                            format!("FO {:.2}s", tc.fade_out.as_secs_f32()),
+                                            egui::FontId::monospace(9.0),
+                                            egui::Color32::from_rgb(140, 200, 255),
+                                        );
+                                    }
+
+                                    fi_resp.drag_started()
+                                        || fi_resp.dragged()
+                                        || fo_resp.drag_started()
+                                        || fo_resp.dragged()
+                                } else {
+                                    false
+                                };
+
                                 let gain_consuming_drag = gain_resp_for_clip
                                     .as_ref()
                                     .is_some_and(|r| r.drag_started() || r.dragged());
-                                if clip_resp.drag_started() && !gain_consuming_drag {
+                                if clip_resp.drag_started()
+                                    && !gain_consuming_drag
+                                    && !fade_consuming_drag
+                                {
                                     // Auto-pause so the user can edit clips and
                                     // resume from the exact same playhead frame.
                                     let is_timeline_playing = state
@@ -1677,6 +1880,18 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
         }
     }
 
+    // Apply fade handle drags.
+    for (ti, ci, new_fi, new_fo) in pending_fades {
+        if let Some(clip) = state.timeline.tracks[ti].clips.get_mut(ci) {
+            if let Some(fi) = new_fi {
+                clip.fade_in = fi;
+            }
+            if let Some(fo) = new_fo {
+                clip.fade_out = fo;
+            }
+        }
+    }
+
     // Apply timeline clip moves.
     for (src_track, src_clip, dst_track, new_start_secs) in pending_moves {
         if src_track == dst_track {
@@ -1718,6 +1933,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             transition: None,
             transition_duration: Duration::from_millis(500),
             gain_db: 0.0,
+            fade_in: Duration::ZERO,
+            fade_out: Duration::ZERO,
         };
         // Sorted insert so that out-of-order drops don't corrupt array order.
         let track = &mut state.timeline.tracks[track_idx].clips;
@@ -1822,6 +2039,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
         ops.sort_by(|a, b| b.1.cmp(&a.1));
         for (ti, ci, left_out, right_start, right_out, source_index, transition_duration) in ops {
             state.timeline.tracks[ti].clips[ci].out_point = Some(left_out);
+            let orig_fade_out = state.timeline.tracks[ti].clips[ci].fade_out;
+            state.timeline.tracks[ti].clips[ci].fade_out = Duration::ZERO;
             let right = state::TimelineClip {
                 source_index,
                 start_on_track: right_start,
@@ -1830,6 +2049,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 transition: None,
                 transition_duration,
                 gain_db: state.timeline.tracks[ti].clips[ci].gain_db,
+                fade_in: Duration::ZERO,
+                fade_out: orig_fade_out,
             };
             state.timeline.tracks[ti].clips.insert(ci + 1, right);
         }
