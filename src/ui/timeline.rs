@@ -197,6 +197,9 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         gain_db: tc.gain_db,
                         fade_in: tc.fade_in,
                         fade_out: tc.fade_out,
+                        brightness: tc.brightness,
+                        contrast: tc.contrast,
+                        saturation: tc.saturation,
                     }
                 };
                 let tracks = &state.timeline.tracks;
@@ -534,6 +537,9 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 gain_db: tc.gain_db,
                 fade_in: tc.fade_in,
                 fade_out: tc.fade_out,
+                brightness: tc.brightness,
+                contrast: tc.contrast,
+                saturation: tc.saturation,
             };
             let tracks = &state.timeline.tracks;
             let v1: Vec<_> = if track_is_active(tracks, 0) {
@@ -594,6 +600,9 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                             gain_db: tc.gain_db,
                             fade_in: tc.fade_in,
                             fade_out: tc.fade_out,
+                            brightness: tc.brightness,
+                            contrast: tc.contrast,
+                            saturation: tc.saturation,
                         };
                         let tracks = &state.timeline.tracks;
                         let v1: Vec<_> = if track_is_active(tracks, 0) {
@@ -664,6 +673,64 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
 
         ui.label(format!("{:.2}s", state.timeline_playhead_secs));
     });
+
+    // ── Clip Properties panel (V1/V2 only; shown when a clip is selected) ────
+    if let Some((ti, ci)) = state.timeline_selected
+        && ti < 2
+    {
+        let src_name = state
+            .timeline
+            .tracks
+            .get(ti)
+            .and_then(|t| t.clips.get(ci))
+            .and_then(|c| state.clips.get(c.source_index))
+            .and_then(|s| s.path.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("(clip)")
+            .to_owned();
+        if let Some(clip) = state
+            .timeline
+            .tracks
+            .get_mut(ti)
+            .and_then(|t| t.clips.get_mut(ci))
+        {
+            egui::CollapsingHeader::new(format!("Clip Properties — {src_name}"))
+                .default_open(true)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Brightness");
+                        ui.add(
+                            egui::Slider::new(&mut clip.brightness, -1.0..=1.0)
+                                .fixed_decimals(2),
+                        );
+                        ui.separator();
+                        ui.label("Contrast");
+                        ui.add(
+                            egui::Slider::new(&mut clip.contrast, 0.0..=3.0).fixed_decimals(2),
+                        );
+                        ui.separator();
+                        ui.label("Saturation");
+                        ui.add(
+                            egui::Slider::new(&mut clip.saturation, 0.0..=3.0).fixed_decimals(2),
+                        );
+                        ui.separator();
+                        #[allow(clippy::float_cmp)]
+                        let is_neutral =
+                            clip.brightness == 0.0 && clip.contrast == 1.0 && clip.saturation == 1.0;
+                        if ui
+                            .add_enabled(!is_neutral, egui::Button::new("Reset"))
+                            .on_hover_text("Reset brightness / contrast / saturation to defaults")
+                            .clicked()
+                        {
+                            clip.brightness = 0.0;
+                            clip.contrast = 1.0;
+                            clip.saturation = 1.0;
+                        }
+                    });
+                    ui.weak("Applied on Export. Preview does not reflect color correction (ff-preview limitation — docs/issue40.md).");
+                });
+        }
+    }
 
     ui.separator();
 
@@ -1970,6 +2037,9 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 gain_db: tc.gain_db,
                 fade_in: tc.fade_in,
                 fade_out: tc.fade_out,
+                brightness: tc.brightness,
+                contrast: tc.contrast,
+                saturation: tc.saturation,
             };
             let tracks = &state.timeline.tracks;
             let v1: Vec<_> = if track_is_active(tracks, 0) {
@@ -2050,6 +2120,9 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             gain_db: 0.0,
             fade_in: Duration::ZERO,
             fade_out: Duration::ZERO,
+            brightness: 0.0,
+            contrast: 1.0,
+            saturation: 1.0,
         };
         // Sorted insert so that out-of-order drops don't corrupt array order.
         let track = &mut state.timeline.tracks[track_idx].clips;
@@ -2166,6 +2239,9 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 gain_db: state.timeline.tracks[ti].clips[ci].gain_db,
                 fade_in: Duration::ZERO,
                 fade_out: orig_fade_out,
+                brightness: state.timeline.tracks[ti].clips[ci].brightness,
+                contrast: state.timeline.tracks[ti].clips[ci].contrast,
+                saturation: state.timeline.tracks[ti].clips[ci].saturation,
             };
             state.timeline.tracks[ti].clips.insert(ci + 1, right);
         }
