@@ -166,15 +166,16 @@ fn drain_timeline_player(state: &mut AppState) {
 
 fn drain_frame(state: &mut AppState, ctx: &egui::Context) {
     if let Ok(mut guard) = state.frame_handle.try_lock()
-        && let Some(frame) = guard.take()
+        && let Some(mut frame) = guard.take()
     {
         // Route PTS to the right player's position indicator
-        if state
+        let is_timeline = state
             .timeline_player_thread
             .as_ref()
             .map(|h| !h.is_finished())
-            .unwrap_or(false)
-        {
+            .unwrap_or(false);
+
+        if is_timeline {
             state.timeline_playhead_secs = frame.pts.as_secs_f64();
             // Loop-back: when loop is enabled and the presented frame reaches the
             // out-point, seek back to the in-point.
@@ -188,6 +189,37 @@ fn drain_frame(state: &mut AppState, ctx: &egui::Context) {
             {
                 handle.seek(loop_in);
                 state.timeline_playhead_secs = loop_in.as_secs_f64();
+            }
+
+            // Apply per-clip color correction for preview.
+            // Find the active V1 clip at the current frame PTS and apply its
+            // brightness/contrast/saturation as a software RGBA transform.
+            let pts = frame.pts;
+            let correction = state
+                .timeline
+                .tracks
+                .first()
+                .and_then(|track| {
+                    track.clips.iter().find(|tc| {
+                        let start = tc.start_on_track;
+                        let eff_dur = match (tc.in_point, tc.out_point) {
+                            (Some(i), Some(o)) if o > i => o - i,
+                            _ => state
+                                .clips
+                                .get(tc.source_index)
+                                .map(|c| c.info.duration())
+                                .unwrap_or(std::time::Duration::ZERO),
+                        };
+                        pts >= start && pts < start + eff_dur
+                    })
+                })
+                .map(|tc| (tc.brightness, tc.contrast, tc.saturation));
+
+            #[allow(clippy::float_cmp)]
+            if let Some((b, c, s)) = correction
+                && (b != 0.0 || c != 1.0 || s != 1.0)
+            {
+                apply_eq_rgba(&mut frame.data, b, c, s);
             }
         } else {
             state.current_pts = Some(frame.pts);
@@ -204,6 +236,35 @@ fn drain_frame(state: &mut AppState, ctx: &egui::Context) {
             }
         }
         ctx.request_repaint();
+    }
+}
+
+/// Applies brightness / contrast / saturation to packed RGBA pixel data in place.
+///
+/// Matches the FFmpeg `eq` filter formula applied in RGB space:
+/// - saturation: mix between Rec.709 luma and original colour
+/// - contrast + brightness: `out = (in − 0.5) × contrast + 0.5 + brightness`
+fn apply_eq_rgba(data: &mut [u8], brightness: f32, contrast: f32, saturation: f32) {
+    for chunk in data.chunks_exact_mut(4) {
+        let r = chunk[0] as f32 / 255.0;
+        let g = chunk[1] as f32 / 255.0;
+        let b = chunk[2] as f32 / 255.0;
+
+        // Saturation via Rec.709 luma
+        let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        let r = luma + (r - luma) * saturation;
+        let g = luma + (g - luma) * saturation;
+        let b = luma + (b - luma) * saturation;
+
+        // Contrast + brightness
+        let r = ((r - 0.5) * contrast + 0.5 + brightness).clamp(0.0, 1.0);
+        let g = ((g - 0.5) * contrast + 0.5 + brightness).clamp(0.0, 1.0);
+        let b = ((b - 0.5) * contrast + 0.5 + brightness).clamp(0.0, 1.0);
+
+        chunk[0] = (r * 255.0 + 0.5) as u8;
+        chunk[1] = (g * 255.0 + 0.5) as u8;
+        chunk[2] = (b * 255.0 + 0.5) as u8;
+        // alpha (chunk[3]) unchanged
     }
 }
 

@@ -23,6 +23,12 @@ pub struct ExportClip {
     pub fade_in: Duration,
     /// Audio fade-out duration (`Duration::ZERO` = no fade).
     pub fade_out: Duration,
+    /// Per-clip brightness. `0.0` = no change.
+    pub brightness: f32,
+    /// Per-clip contrast. `1.0` = no change.
+    pub contrast: f32,
+    /// Per-clip saturation. `1.0` = no change.
+    pub saturation: f32,
 }
 
 /// Send-safe snapshot of all timeline tracks, constructed on the main thread
@@ -87,9 +93,15 @@ fn clips_to_avio(clips: Vec<ExportClip>) -> Vec<avio::Clip> {
             } else {
                 clip
             };
-            match c.transition {
+            let clip = match c.transition {
                 Some(kind) => clip.with_transition(kind, c.transition_duration),
                 None => clip,
+            };
+            #[allow(clippy::float_cmp)]
+            if c.brightness != 0.0 || c.contrast != 1.0 || c.saturation != 1.0 {
+                clip.with_color_correction(c.brightness, c.contrast, c.saturation)
+            } else {
+                clip
             }
         })
         .collect()
@@ -138,11 +150,6 @@ fn build_and_render(
             snapshot.export_filters.output_height,
         );
     }
-
-    // avio API gap: TimelineBuilder has no video_filter() or post-processing hook.
-    // FilterGraphBuilder::eq(brightness, contrast, saturation) exists in ff-filter
-    // but cannot be attached to Timeline::render() — see docs/issue13.md.
-    // Color balance settings are stored but not applied during render.
 
     // avio API gap: TimelineBuilder has no audio_filter() method.
     // FilterGraphBuilder::loudness_normalize() exists in ff-filter but

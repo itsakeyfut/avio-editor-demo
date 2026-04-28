@@ -21,6 +21,12 @@ pub struct TrackClipData {
     pub fade_in: Duration,
     /// Audio fade-out duration (`Duration::ZERO` = no fade).
     pub fade_out: Duration,
+    /// Per-clip brightness. `0.0` = no change.
+    pub brightness: f32,
+    /// Per-clip contrast. `1.0` = no change.
+    pub contrast: f32,
+    /// Per-clip saturation. `1.0` = no change.
+    pub saturation: f32,
 }
 
 // ── EguiFrameSink ─────────────────────────────────────────────────────────────
@@ -393,6 +399,10 @@ pub fn spawn_timeline_player(
             }
             if let Some(kind) = tc.transition {
                 c = c.with_transition(kind, tc.transition_duration);
+            }
+            #[allow(clippy::float_cmp)]
+            if tc.brightness != 0.0 || tc.contrast != 1.0 || tc.saturation != 1.0 {
+                c = c.with_color_correction(tc.brightness, tc.contrast, tc.saturation);
             }
             c
         };

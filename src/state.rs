@@ -389,6 +389,15 @@ pub struct TimelineClip {
     /// Fade-out duration at the end of the clip. Default: zero (no fade).
     /// avio gap: per-clip fade not applied during render (no audio_filter() on TimelineBuilder)
     pub fade_out: std::time::Duration,
+    /// Per-clip brightness. Range: −1.0..=1.0. Default: 0.0 (no change).
+    /// avio gap: no per-clip video_filter() on TimelineBuilder — stored as UI state only (docs/issue13.md).
+    pub brightness: f32,
+    /// Per-clip contrast. Range: 0.0..=3.0. Default: 1.0 (no change).
+    /// avio gap: no per-clip video_filter() on TimelineBuilder — stored as UI state only (docs/issue13.md).
+    pub contrast: f32,
+    /// Per-clip saturation. Range: 0.0..=3.0. Default: 1.0 (no change).
+    /// avio gap: no per-clip video_filter() on TimelineBuilder — stored as UI state only (docs/issue13.md).
+    pub saturation: f32,
 }
 
 pub struct TimelineState {
