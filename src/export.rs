@@ -29,6 +29,8 @@ pub struct ExportClip {
     pub contrast: f32,
     /// Per-clip saturation. `1.0` = no change.
     pub saturation: f32,
+    /// Per-clip speed multiplier. `1.0` = normal. Applied by trimming `out_point` (avio gap — docs/issue41.md).
+    pub speed: f32,
 }
 
 /// Send-safe snapshot of all timeline tracks, constructed on the main thread
@@ -77,6 +79,12 @@ fn clips_to_avio(clips: Vec<ExportClip>) -> Vec<avio::Clip> {
             let clip = match (c.in_point, c.out_point) {
                 (Some(in_pt), Some(out_pt)) => clip.trim(in_pt, out_pt),
                 _ => clip,
+            };
+            #[allow(clippy::float_cmp)]
+            let clip = if c.speed != 1.0 {
+                clip.with_speed(c.speed as f64)
+            } else {
+                clip
             };
             let clip = if c.gain_db != 0.0 {
                 clip.volume(c.gain_db as f64)

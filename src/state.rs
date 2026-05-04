@@ -398,6 +398,10 @@ pub struct TimelineClip {
     /// Per-clip saturation. Range: 0.0..=3.0. Default: 1.0 (no change).
     /// avio gap: no per-clip video_filter() on TimelineBuilder — stored as UI state only (docs/issue13.md).
     pub saturation: f32,
+    /// Per-clip playback speed multiplier. Range: 0.1..=4.0 (10%–400%). Default: 1.0 (normal speed).
+    /// avio gap: `Clip` has no speed field; fast motion is approximated by trimming
+    /// `out_point = in_point + source_dur / speed`. Slow motion is unsupported — docs/issue41.md.
+    pub speed: f32,
 }
 
 pub struct TimelineState {
