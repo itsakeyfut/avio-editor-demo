@@ -53,12 +53,13 @@ fn snap_trim_edge(
             let Some(src) = clips_info.get(clip.source_index) else {
                 continue;
             };
-            let dur = match (clip.in_point, clip.out_point) {
+            let src_dur = match (clip.in_point, clip.out_point) {
                 (Some(i), Some(o)) if o > i => (o - i).as_secs_f32(),
                 (None, Some(o)) => o.as_secs_f32(),
                 (Some(i), None) => src.info.duration().saturating_sub(i).as_secs_f32(),
                 _ => src.info.duration().as_secs_f32(),
             };
+            let dur = src_dur / clip.speed;
             let c_left = lane_left + clip.start_on_track.as_secs_f32() * pps;
             let c_right = c_left + dur * pps;
 
@@ -100,12 +101,13 @@ fn snap_clip_start(
                 .filter(|(ci, _)| !(dst_track == src_track && *ci == src_clip))
                 .filter_map(|(_, c)| {
                     clips_info.get(c.source_index).map(|s| {
-                        let dur = match (c.in_point, c.out_point) {
+                        let src_dur = match (c.in_point, c.out_point) {
                             (Some(i), Some(o)) if o > i => (o - i).as_secs_f32(),
                             (None, Some(o)) => o.as_secs_f32(),
                             (Some(i), None) => s.info.duration().saturating_sub(i).as_secs_f32(),
                             _ => s.info.duration().as_secs_f32(),
                         };
+                        let dur = src_dur / c.speed;
                         let cs = c.start_on_track.as_secs_f32();
                         (cs, cs + dur)
                     })
@@ -200,6 +202,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         brightness: tc.brightness,
                         contrast: tc.contrast,
                         saturation: tc.saturation,
+                        speed: tc.speed,
                     }
                 };
                 let tracks = &state.timeline.tracks;
@@ -540,6 +543,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 brightness: tc.brightness,
                 contrast: tc.contrast,
                 saturation: tc.saturation,
+                speed: tc.speed,
             };
             let tracks = &state.timeline.tracks;
             let v1: Vec<_> = if track_is_active(tracks, 0) {
@@ -603,6 +607,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                             brightness: tc.brightness,
                             contrast: tc.contrast,
                             saturation: tc.saturation,
+                            speed: tc.speed,
                         };
                         let tracks = &state.timeline.tracks;
                         let v1: Vec<_> = if track_is_active(tracks, 0) {
@@ -698,6 +703,20 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 .default_open(true)
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
+                        ui.label("Speed");
+                        let mut speed_pct = clip.speed * 100.0;
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut speed_pct, 10.0..=400.0)
+                                    .suffix(" %")
+                                    .fixed_decimals(0),
+                            )
+                            .changed()
+                        {
+                            clip.speed = (speed_pct / 100.0).clamp(0.1, 4.0);
+                        }
+                    });
+                    ui.horizontal(|ui| {
                         ui.label("Brightness");
                         ui.add(
                             egui::Slider::new(&mut clip.brightness, -1.0..=1.0)
@@ -727,7 +746,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                             clip.saturation = 1.0;
                         }
                     });
-                    ui.weak("Applied on Export. Preview does not reflect color correction (ff-preview limitation — docs/issue40.md).");
+                    ui.weak("Color correction applied on Export only (ff-preview limitation — docs/issue40.md). Speed applies to preview and export; audio pitch changes proportionally in preview (no pitch correction — docs/issue42.md).");
                 });
         }
     }
@@ -748,13 +767,13 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
         .flat_map(|t| t.clips.iter())
         .filter_map(|tc| {
             state.clips.get(tc.source_index).map(|c| {
-                let dur = match (tc.in_point, tc.out_point) {
+                let src_dur = match (tc.in_point, tc.out_point) {
                     (Some(i), Some(o)) if o > i => o - i,
                     (None, Some(o)) => o,
                     (Some(i), None) => c.info.duration().saturating_sub(i),
                     _ => c.info.duration(),
                 };
-                tc.start_on_track.as_secs_f32() + dur.as_secs_f32()
+                tc.start_on_track.as_secs_f32() + src_dur.as_secs_f32() / tc.speed
             })
         })
         .fold(0.0f32, f32::max);
@@ -777,6 +796,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
     let mut pending_gain: Vec<(usize, usize, f32)> = Vec::new();
     // (track_idx, clip_idx, new_fade_in, new_fade_out) — fade handle drags on A1 clips
     let mut pending_fades: Vec<(usize, usize, Option<Duration>, Option<Duration>)> = Vec::new();
+    // (track_idx, clip_idx, new_speed) — speed changes from context menu
+    let mut pending_speeds: Vec<(usize, usize, f32)> = Vec::new();
     // track_idx — M or S button clicked this frame
     let mut pending_mute_toggle: Option<usize> = None;
     let mut pending_solo_toggle: Option<usize> = None;
@@ -998,7 +1019,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                             let fps = source.info.frame_rate().unwrap_or(30.0) as f32;
                             let one_frame_sec = (1.0 / fps).max(0.001_f32);
                             let orig_x = lane_rect.left() + tc.start_on_track.as_secs_f32() * pps;
-                            let orig_w = eff_dur.as_secs_f32() * pps;
+                            let orig_w = eff_dur.as_secs_f32() / tc.speed * pps;
+                            let mut new_speed_pct = tc.speed * 100.0;
 
                             // Live-preview dimensions during an active trim drag
                             let (live_x, live_w) = if let Some(ref trim) = active_trim {
@@ -1142,10 +1164,16 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                     .file_name()
                                     .unwrap_or_default()
                                     .to_string_lossy();
+                                #[allow(clippy::float_cmp)]
+                                let speed_label = if tc.speed != 1.0 {
+                                    format!(" [{:.0}%]", tc.speed * 100.0)
+                                } else {
+                                    String::new()
+                                };
                                 ui.painter().text(
                                     cr.left_center() + egui::vec2(4.0, 0.0),
                                     egui::Align2::LEFT_CENTER,
-                                    name.as_ref(),
+                                    format!("{}{}", name.as_ref(), speed_label),
                                     egui::FontId::proportional(11.0),
                                     egui::Color32::WHITE,
                                 );
@@ -1728,7 +1756,26 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                             }
                                             ui.separator();
                                         }
+                                        // Speed — all tracks
+                                        ui.separator();
+                                        ui.label("Speed:");
+                                        if ui
+                                            .add(
+                                                egui::DragValue::new(&mut new_speed_pct)
+                                                    .range(10.0..=400.0)
+                                                    .speed(1.0)
+                                                    .suffix(" %"),
+                                            )
+                                            .changed()
+                                        {
+                                            pending_speeds.push((
+                                                track_idx,
+                                                clip_i,
+                                                (new_speed_pct / 100.0).clamp(0.1, 4.0),
+                                            ));
+                                        }
                                         // Delete options — all tracks
+                                        ui.separator();
                                         if ui.button("Delete").clicked() {
                                             pending_deletes.push((track_idx, clip_i, false));
                                             ui.close();
@@ -1783,14 +1830,15 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         .and_then(|t| t.clips.get(drag.src_clip))
                         .and_then(|tc| {
                             state.clips.get(tc.source_index).map(|s| {
-                                match (tc.in_point, tc.out_point) {
+                                let src_dur = match (tc.in_point, tc.out_point) {
                                     (Some(i), Some(o)) if o > i => (o - i).as_secs_f32(),
                                     (None, Some(o)) => o.as_secs_f32(),
                                     (Some(i), None) => {
                                         s.info.duration().saturating_sub(i).as_secs_f32()
                                     }
                                     _ => s.info.duration().as_secs_f32(),
-                                }
+                                };
+                                src_dur / tc.speed
                             })
                         })
                         .unwrap_or(1.0);
@@ -1912,12 +1960,13 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             .get(clip.source_index)
             .map(|s| s.info.duration())
             .unwrap_or(Duration::ZERO);
-        let eff_dur = match (clip.in_point, clip.out_point) {
+        let eff_src_dur = match (clip.in_point, clip.out_point) {
             (Some(i), Some(o)) if o > i => o - i,
             (None, Some(o)) => o,
             (Some(i), None) => src_dur.saturating_sub(i),
             _ => src_dur,
         };
+        let eff_dur = eff_src_dur.div_f32(clip.speed);
         let paste_start = clip.start_on_track + eff_dur;
         let mut new_clip = clip;
         new_clip.start_on_track = paste_start;
@@ -1937,12 +1986,13 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             .get(clip.source_index)
             .map(|s| s.info.duration())
             .unwrap_or(Duration::ZERO);
-        let eff_dur = match (clip.in_point, clip.out_point) {
+        let eff_src_dur = match (clip.in_point, clip.out_point) {
             (Some(i), Some(o)) if o > i => o - i,
             (None, Some(o)) => o,
             (Some(i), None) => src_dur.saturating_sub(i),
             _ => src_dur,
         };
+        let eff_dur = eff_src_dur.div_f32(clip.speed);
         let dup_start = clip.start_on_track + eff_dur;
         let mut new_clip = clip;
         new_clip.start_on_track = dup_start;
@@ -2040,6 +2090,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 brightness: tc.brightness,
                 contrast: tc.contrast,
                 saturation: tc.saturation,
+                speed: tc.speed,
             };
             let tracks = &state.timeline.tracks;
             let v1: Vec<_> = if track_is_active(tracks, 0) {
@@ -2123,6 +2174,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             brightness: 0.0,
             contrast: 1.0,
             saturation: 1.0,
+            speed: 1.0,
         };
         // Sorted insert so that out-of-order drops don't corrupt array order.
         let track = &mut state.timeline.tracks[track_idx].clips;
@@ -2138,6 +2190,11 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             clip.transition_duration = duration;
         }
     }
+    for (ti, ci, new_speed) in pending_speeds {
+        if let Some(clip) = state.timeline.tracks[ti].clips.get_mut(ci) {
+            clip.speed = new_speed.clamp(0.1, 4.0);
+        }
+    }
 
     // Apply deletes in reverse clip order so removals don't shift remaining indices.
     pending_deletes.sort_by(|a, b| b.1.cmp(&a.1));
@@ -2150,12 +2207,13 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     .get(deleted.source_index)
                     .map(|s| s.info.duration())
                     .unwrap_or(Duration::ZERO);
-                let eff_dur = match (deleted.in_point, deleted.out_point) {
+                let eff_src_dur = match (deleted.in_point, deleted.out_point) {
                     (Some(i), Some(o)) if o > i => o - i,
                     (None, Some(o)) => o,
                     (Some(i), None) => src_dur.saturating_sub(i),
                     _ => src_dur,
                 };
+                let eff_dur = eff_src_dur.div_f32(deleted.speed);
                 let gap_start = deleted.start_on_track + eff_dur;
                 for clip in &mut state.timeline.tracks[ti].clips {
                     if clip.start_on_track >= gap_start {
@@ -2242,6 +2300,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 brightness: state.timeline.tracks[ti].clips[ci].brightness,
                 contrast: state.timeline.tracks[ti].clips[ci].contrast,
                 saturation: state.timeline.tracks[ti].clips[ci].saturation,
+                speed: state.timeline.tracks[ti].clips[ci].speed,
             };
             state.timeline.tracks[ti].clips.insert(ci + 1, right);
         }

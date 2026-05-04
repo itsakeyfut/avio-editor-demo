@@ -27,6 +27,8 @@ pub struct TrackClipData {
     pub contrast: f32,
     /// Per-clip saturation. `1.0` = no change.
     pub saturation: f32,
+    /// Per-clip playback speed multiplier. `1.0` = normal speed.
+    pub speed: f32,
 }
 
 // ── EguiFrameSink ─────────────────────────────────────────────────────────────
@@ -388,6 +390,10 @@ pub fn spawn_timeline_player(
             let mut c = avio::Clip::new(&tc.path).offset(tc.start_on_track);
             c.in_point = tc.in_point;
             c.out_point = tc.out_point;
+            #[allow(clippy::float_cmp)]
+            if tc.speed != 1.0 {
+                c = c.with_speed(tc.speed as f64);
+            }
             if tc.gain_db != 0.0 {
                 c = c.volume(tc.gain_db as f64);
             }

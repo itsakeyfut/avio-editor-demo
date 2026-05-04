@@ -408,6 +408,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
                 brightness: 0.0,
                 contrast: 1.0,
                 saturation: 1.0,
+                speed: 1.0,
             });
         }
         let can_trim = clip.in_point.is_some() && clip.out_point.is_some();

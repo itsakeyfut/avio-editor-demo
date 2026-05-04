@@ -22,6 +22,21 @@ run:
 run-release:
     cargo run --release
 
+# Run with warn-level logging (shows [nan-debug] guards)
+debug:
+    RUST_LOG=warn cargo run
+
+# Run with full debug logging (avio internals + FFmpeg filter traces)
+debug-verbose:
+    RUST_LOG=debug cargo run
+
+# Run with per-crate log control:
+#   avio_editor_demo=warn  — app-level warn+
+#   ff_filter=debug        — filter graph construction detail
+#   ff_encode=debug        — encoder frame detail
+debug-avio:
+    RUST_LOG=warn,ff_filter=debug,ff_encode=debug cargo run
+
 # === Code Quality ===
 
 # Format code
