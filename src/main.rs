@@ -125,8 +125,11 @@ fn active_frame_duration(state: &state::AppState) -> std::time::Duration {
 
     let fps = if tl_active {
         let playhead = std::time::Duration::from_secs_f64(state.timeline_playhead_secs);
-        state.timeline.tracks[..2]
+        state
+            .timeline
+            .tracks
             .iter()
+            .filter(|t| t.kind == state::TrackKind::Video)
             .flat_map(|t| &t.clips)
             .find_map(|c| {
                 let src = state.clips.get(c.source_index)?;

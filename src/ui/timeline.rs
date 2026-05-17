@@ -4,11 +4,21 @@ use std::time::Duration;
 use crate::presets::PresetFile;
 use crate::{export, player, state};
 
+fn blend_mode_label(mode: avio::BlendMode) -> &'static str {
+    match mode {
+        avio::BlendMode::Normal => "Normal",
+        avio::BlendMode::Multiply => "Multiply",
+        avio::BlendMode::Screen => "Screen",
+        avio::BlendMode::Overlay => "Overlay",
+        _ => "Custom",
+    }
+}
+
 /// Returns `true` when track `idx` should contribute clips to the player/exporter.
 ///
 /// Solo takes priority: if any track is soloed, only soloed tracks are active.
 /// Otherwise, a track is active unless it is muted.
-fn track_is_active(tracks: &[state::Track; 3], idx: usize) -> bool {
+fn track_is_active(tracks: &[state::Track], idx: usize) -> bool {
     let any_solo = tracks.iter().any(|t| t.soloed);
     if any_solo {
         tracks[idx].soloed
@@ -203,22 +213,25 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         contrast: tc.contrast,
                         saturation: tc.saturation,
                         speed: tc.speed,
+                        opacity: tc.opacity,
+                        blend_mode: tc.blend_mode,
                     }
                 };
                 let tracks = &state.timeline.tracks;
+                let audio_start = state.timeline.audio_track_start();
                 let snapshot = export::ExportSnapshot {
-                    v1_clips: if track_is_active(tracks, 0) {
-                        tracks[0].clips.iter().map(make_clip).collect()
-                    } else {
-                        vec![]
-                    },
-                    v2_clips: if track_is_active(tracks, 1) {
-                        tracks[1].clips.iter().map(make_clip).collect()
-                    } else {
-                        vec![]
-                    },
-                    a1_clips: if track_is_active(tracks, 2) {
-                        tracks[2].clips.iter().map(make_clip).collect()
+                    video_clips: (0..audio_start)
+                        .map(|ti| {
+                            if track_is_active(tracks, ti) {
+                                tracks[ti].clips.iter().map(make_clip).collect()
+                            } else {
+                                vec![]
+                            }
+                        })
+                        .collect(),
+                    a1_clips: if audio_start < tracks.len() && track_is_active(tracks, audio_start)
+                    {
+                        tracks[audio_start].clips.iter().map(make_clip).collect()
                     } else {
                         vec![]
                     },
@@ -365,11 +378,12 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
 
             // Loudness measurement
             ui.horizontal(|ui| {
-                let can_measure = !state.timeline.tracks[2].clips.is_empty();
+                let audio_start = state.timeline.audio_track_start();
+                let can_measure = state.timeline.tracks.get(audio_start).is_some_and(|t| !t.clips.is_empty());
                 if ui
                     .add_enabled(can_measure, egui::Button::new("Measure Loudness"))
                     .clicked()
-                    && let Some(tc) = state.timeline.tracks[2].clips.first()
+                    && let Some(tc) = state.timeline.tracks.get(audio_start).and_then(|t| t.clips.first())
                 {
                     let path = state.clips[tc.source_index].path.clone();
                     let tx = state.loudness_tx.clone();
@@ -544,20 +558,22 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 contrast: tc.contrast,
                 saturation: tc.saturation,
                 speed: tc.speed,
+                opacity: tc.opacity,
+                blend_mode: tc.blend_mode,
             };
             let tracks = &state.timeline.tracks;
-            let v1: Vec<_> = if track_is_active(tracks, 0) {
-                tracks[0].clips.iter().map(make_tcd).collect()
-            } else {
-                vec![]
-            };
-            let v2: Vec<_> = if track_is_active(tracks, 1) {
-                tracks[1].clips.iter().map(make_tcd).collect()
-            } else {
-                vec![]
-            };
-            let a1: Vec<_> = if track_is_active(tracks, 2) {
-                tracks[2].clips.iter().map(make_tcd).collect()
+            let audio_start = state.timeline.audio_track_start();
+            let video_tracks: Vec<Vec<_>> = (0..audio_start)
+                .map(|ti| {
+                    if track_is_active(tracks, ti) {
+                        tracks[ti].clips.iter().map(make_tcd).collect()
+                    } else {
+                        vec![]
+                    }
+                })
+                .collect();
+            let a1: Vec<_> = if audio_start < tracks.len() && track_is_active(tracks, audio_start) {
+                tracks[audio_start].clips.iter().map(make_tcd).collect()
             } else {
                 vec![]
             };
@@ -568,8 +584,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 .cpal_rate
                 .store(1.0f64.to_bits(), std::sync::atomic::Ordering::Relaxed);
             let (thread, handle_rx) = player::spawn_timeline_player(
-                v1,
-                v2,
+                video_tracks,
                 a1,
                 Arc::clone(&state.frame_handle),
                 ui.ctx().clone(),
@@ -608,29 +623,31 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                             contrast: tc.contrast,
                             saturation: tc.saturation,
                             speed: tc.speed,
+                            opacity: tc.opacity,
+                            blend_mode: tc.blend_mode,
                         };
                         let tracks = &state.timeline.tracks;
-                        let v1: Vec<_> = if track_is_active(tracks, 0) {
-                            tracks[0].clips.iter().map(make_tcd).collect()
-                        } else {
-                            vec![]
-                        };
-                        let v2: Vec<_> = if track_is_active(tracks, 1) {
-                            tracks[1].clips.iter().map(make_tcd).collect()
-                        } else {
-                            vec![]
-                        };
-                        let a1: Vec<_> = if track_is_active(tracks, 2) {
-                            tracks[2].clips.iter().map(make_tcd).collect()
-                        } else {
-                            vec![]
-                        };
+                        let audio_start = state.timeline.audio_track_start();
+                        let video_tracks: Vec<Vec<_>> = (0..audio_start)
+                            .map(|ti| {
+                                if track_is_active(tracks, ti) {
+                                    tracks[ti].clips.iter().map(make_tcd).collect()
+                                } else {
+                                    vec![]
+                                }
+                            })
+                            .collect();
+                        let a1: Vec<_> =
+                            if audio_start < tracks.len() && track_is_active(tracks, audio_start) {
+                                tracks[audio_start].clips.iter().map(make_tcd).collect()
+                            } else {
+                                vec![]
+                            };
                         state
                             .cpal_rate
                             .store(1.0f64.to_bits(), std::sync::atomic::Ordering::Relaxed);
                         let (thread, handle_rx) = player::spawn_timeline_player(
-                            v1,
-                            v2,
+                            video_tracks,
                             a1,
                             Arc::clone(&state.frame_handle),
                             ui.ctx().clone(),
@@ -677,11 +694,16 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
         }
 
         ui.label(format!("{:.2}s", state.timeline_playhead_secs));
+
+        ui.separator();
+        if ui.button("+ Video Track").clicked() {
+            state.timeline.add_video_track();
+        }
     });
 
-    // ── Clip Properties panel (V1/V2 only; shown when a clip is selected) ────
+    // ── Clip Properties panel (video tracks only; shown when a clip is selected) ────
     if let Some((ti, ci)) = state.timeline_selected
-        && ti < 2
+        && ti < state.timeline.audio_track_start()
     {
         let src_name = state
             .timeline
@@ -717,6 +739,42 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         }
                     });
                     ui.horizontal(|ui| {
+                        ui.label("Opacity");
+                        let mut opacity_pct = clip.opacity * 100.0;
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut opacity_pct, 0.0..=100.0)
+                                    .suffix(" %")
+                                    .fixed_decimals(0),
+                            )
+                            .changed()
+                        {
+                            clip.opacity = (opacity_pct / 100.0).clamp(0.0, 1.0);
+                        }
+                    });
+                    // Blend mode is only meaningful for overlay (V2+) clips.
+                    if ti >= 1 {
+                        ui.horizontal(|ui| {
+                            ui.label("Blend");
+                            egui::ComboBox::from_id_salt("clip_blend_mode")
+                                .selected_text(blend_mode_label(clip.blend_mode))
+                                .show_ui(ui, |ui| {
+                                    for mode in [
+                                        avio::BlendMode::Normal,
+                                        avio::BlendMode::Multiply,
+                                        avio::BlendMode::Screen,
+                                        avio::BlendMode::Overlay,
+                                    ] {
+                                        ui.selectable_value(
+                                            &mut clip.blend_mode,
+                                            mode,
+                                            blend_mode_label(mode),
+                                        );
+                                    }
+                                });
+                        });
+                    }
+                    ui.horizontal(|ui| {
                         ui.label("Brightness");
                         ui.add(
                             egui::Slider::new(&mut clip.brightness, -1.0..=1.0)
@@ -746,7 +804,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                             clip.saturation = 1.0;
                         }
                     });
-                    ui.weak("Color correction applied on Export only (ff-preview limitation — docs/issue40.md). Speed applies to preview and export; audio pitch changes proportionally in preview (no pitch correction — docs/issue42.md).");
+                    ui.weak("Color correction applied on Export only (ff-preview limitation — docs/issue40.md). Speed applies to preview and export; audio pitch changes proportionally in preview (no pitch correction — docs/issue42.md). Opacity applies to preview (V1 fades to black; V2 fades over V1). Blend mode applies to export only (docs/issue43.md).");
                 });
         }
     }
@@ -932,11 +990,20 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         egui::vec2(LABEL_WIDTH, TRACK_HEIGHT),
                         egui::Layout::top_down(egui::Align::Center),
                         |ui| {
-                            ui.label(match track.kind {
-                                state::TrackKind::Video1 => "V1",
-                                state::TrackKind::Video2 => "V2",
-                                state::TrackKind::Audio1 => "A1",
-                            });
+                            let label = if track.kind == state::TrackKind::Video {
+                                let vn = state.timeline.tracks[..=track_idx]
+                                    .iter()
+                                    .filter(|t| t.kind == state::TrackKind::Video)
+                                    .count();
+                                format!("V{vn}")
+                            } else {
+                                let an = state.timeline.tracks[..=track_idx]
+                                    .iter()
+                                    .filter(|t| t.kind == state::TrackKind::Audio)
+                                    .count();
+                                format!("A{an}")
+                            };
+                            ui.label(label);
                             ui.horizontal(|ui| {
                                 let m_col = if track.muted {
                                     egui::Color32::from_rgb(240, 160, 40)
@@ -1000,10 +1067,10 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
 
                     // Clip rectangles
                     let clip_color = match track.kind {
-                        state::TrackKind::Video1 | state::TrackKind::Video2 => {
+                        state::TrackKind::Video => {
                             egui::Color32::from_rgb(70, 130, 180) // steel blue
                         }
-                        state::TrackKind::Audio1 => {
+                        state::TrackKind::Audio => {
                             egui::Color32::from_rgb(70, 150, 120) // teal
                         }
                     };
@@ -1090,8 +1157,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                     handle_color,
                                 );
 
-                                // Filmstrip thumbnails — V1/V2 only
-                                if track.kind != state::TrackKind::Audio1
+                                // Filmstrip thumbnails — video tracks only
+                                if track.kind != state::TrackKind::Audio
                                     && let Some(ss) = &source.sprite_sheet
                                 {
                                     let tile_w = TRACK_HEIGHT * (16.0 / 9.0);
@@ -1137,8 +1204,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                     );
                                 }
 
-                                // Waveform — A1 track only
-                                if track.kind == state::TrackKind::Audio1
+                                // Waveform — audio tracks only
+                                if track.kind == state::TrackKind::Audio
                                     && !source.waveform.is_empty()
                                 {
                                     let n = source.waveform.len();
@@ -1178,8 +1245,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                     egui::Color32::WHITE,
                                 );
 
-                                // Silence region overlays — A1 track only
-                                if track.kind == state::TrackKind::Audio1 {
+                                // Silence region overlays — audio tracks only
+                                if track.kind == state::TrackKind::Audio {
                                     for &(start, end) in &source.silence_regions {
                                         let sx0 = lane_rect.left()
                                             + (tc.start_on_track + start).as_secs_f32() * pps;
@@ -1202,10 +1269,10 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                     }
                                 }
 
-                                // Fade ramps — A1 track only. Painted before interaction widgets
+                                // Fade ramps — audio tracks only. Painted before interaction widgets
                                 // so the triangular overlays appear under any interactive chrome.
                                 // avio gap: per-clip fade-in/out not applied during render
-                                if track.kind == state::TrackKind::Audio1 {
+                                if track.kind == state::TrackKind::Audio {
                                     let clipped = ui.painter().with_clip_rect(cr);
                                     let fade_color =
                                         egui::Color32::from_rgba_unmultiplied(0, 0, 0, 140);
@@ -1271,11 +1338,11 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                     ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
                                 }
 
-                                // Gain line — A1 track only. Registered AFTER clip_resp so it
+                                // Gain line — audio tracks only. Registered AFTER clip_resp so it
                                 // wins hover/drag priority when the pointer is over the line.
                                 // Range: −40 dB (bottom) to +12 dB (top); 0 dB at mid-height.
                                 // avio gap: per-clip gain not applied (no audio_filter() on TimelineBuilder)
-                                let gain_resp_for_clip = if track.kind == state::TrackKind::Audio1 {
+                                let gain_resp_for_clip = if track.kind == state::TrackKind::Audio {
                                     const GAIN_DB_MAX: f32 = 12.0;
                                     const GAIN_DB_MIN: f32 = -40.0;
                                     let y_frac = if tc.gain_db >= 0.0 {
@@ -1335,10 +1402,9 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                     None
                                 };
 
-                                // Fade handles — A1 track only. Registered AFTER gain_resp for
+                                // Fade handles — audio tracks only. Registered AFTER gain_resp for
                                 // the highest interaction priority on the clip rect.
-                                let fade_consuming_drag = if track.kind == state::TrackKind::Audio1
-                                {
+                                let fade_consuming_drag = if track.kind == state::TrackKind::Audio {
                                     const FADE_HANDLE_PX: f32 = 10.0;
                                     let half = cr.height() / 2.0;
                                     let eff_dur_secs = {
@@ -1699,7 +1765,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                         tc.transition_duration.as_millis() as f64;
                                     clip_resp.context_menu(|ui| {
                                         // Transition options — V1 only
-                                        if track.kind == state::TrackKind::Video1 {
+                                        if track_idx == 0 {
                                             ui.label("Transition to previous clip:");
                                             for &variant in &[
                                                 avio::XfadeTransition::Fade,
@@ -2000,9 +2066,13 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
         pending_inserts.push((ti, new_clip));
     }
 
-    // Snapshot all 3 tracks before applying any pending ops.
-    let tracks_before: [Vec<state::TimelineClip>; 3] =
-        std::array::from_fn(|i| state.timeline.tracks[i].clips.clone());
+    // Snapshot all tracks before applying any pending ops.
+    let tracks_before: Vec<Vec<state::TimelineClip>> = state
+        .timeline
+        .tracks
+        .iter()
+        .map(|t| t.clips.clone())
+        .collect();
     // Flags captured before pending vecs are consumed by for-loops.
     let had_trims = !pending_trims.is_empty();
     let had_moves = !pending_moves.is_empty();
@@ -2091,20 +2161,22 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 contrast: tc.contrast,
                 saturation: tc.saturation,
                 speed: tc.speed,
+                opacity: tc.opacity,
+                blend_mode: tc.blend_mode,
             };
             let tracks = &state.timeline.tracks;
-            let v1: Vec<_> = if track_is_active(tracks, 0) {
-                tracks[0].clips.iter().map(make_tcd).collect()
-            } else {
-                vec![]
-            };
-            let v2: Vec<_> = if track_is_active(tracks, 1) {
-                tracks[1].clips.iter().map(make_tcd).collect()
-            } else {
-                vec![]
-            };
-            let a1: Vec<_> = if track_is_active(tracks, 2) {
-                tracks[2].clips.iter().map(make_tcd).collect()
+            let audio_start = state.timeline.audio_track_start();
+            let video_tracks: Vec<Vec<_>> = (0..audio_start)
+                .map(|ti| {
+                    if track_is_active(tracks, ti) {
+                        tracks[ti].clips.iter().map(make_tcd).collect()
+                    } else {
+                        vec![]
+                    }
+                })
+                .collect();
+            let a1: Vec<_> = if audio_start < tracks.len() && track_is_active(tracks, audio_start) {
+                tracks[audio_start].clips.iter().map(make_tcd).collect()
             } else {
                 vec![]
             };
@@ -2112,8 +2184,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 .cpal_rate
                 .store(1.0f64.to_bits(), std::sync::atomic::Ordering::Relaxed);
             let (thread, handle_rx) = player::spawn_timeline_player(
-                v1,
-                v2,
+                video_tracks,
                 a1,
                 Arc::clone(&state.frame_handle),
                 ctx,
@@ -2175,6 +2246,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             contrast: 1.0,
             saturation: 1.0,
             speed: 1.0,
+            opacity: 1.0,
+            blend_mode: avio::BlendMode::Normal,
         };
         // Sorted insert so that out-of-order drops don't corrupt array order.
         let track = &mut state.timeline.tracks[track_idx].clips;
@@ -2301,6 +2374,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 contrast: state.timeline.tracks[ti].clips[ci].contrast,
                 saturation: state.timeline.tracks[ti].clips[ci].saturation,
                 speed: state.timeline.tracks[ti].clips[ci].speed,
+                opacity: state.timeline.tracks[ti].clips[ci].opacity,
+                blend_mode: state.timeline.tracks[ti].clips[ci].blend_mode,
             };
             state.timeline.tracks[ti].clips.insert(ci + 1, right);
         }
@@ -2333,7 +2408,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             ""
         };
         if !label.is_empty() {
-            let snapshots: Vec<_> = (0..3_usize)
+            let snapshots: Vec<_> = (0..state.timeline.tracks.len())
                 .filter(|&i| state.timeline.tracks[i].clips != tracks_before[i])
                 .map(|i| {
                     (

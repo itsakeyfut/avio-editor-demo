@@ -29,6 +29,10 @@ pub struct TrackClipData {
     pub saturation: f32,
     /// Per-clip playback speed multiplier. `1.0` = normal speed.
     pub speed: f32,
+    /// Per-clip opacity (`1.0` = fully opaque). Forwarded to `Clip::with_opacity`.
+    pub opacity: f32,
+    /// Per-clip blend mode. Forwarded to `Clip::with_blend_mode`.
+    pub blend_mode: avio::BlendMode,
 }
 
 // ── EguiFrameSink ─────────────────────────────────────────────────────────────
@@ -375,8 +379,7 @@ pub fn spawn_player(
 /// Returns `(thread, handle_rx)`. `handle_rx` delivers the `PlayerHandle` once
 /// the runner is ready (one-shot).
 pub fn spawn_timeline_player(
-    v1: Vec<TrackClipData>,
-    v2: Vec<TrackClipData>,
+    video_tracks: Vec<Vec<TrackClipData>>,
     a1: Vec<TrackClipData>,
     frame_handle: Arc<Mutex<Option<RgbaFrame>>>,
     ctx: egui::Context,
@@ -410,21 +413,36 @@ pub fn spawn_timeline_player(
             if tc.brightness != 0.0 || tc.contrast != 1.0 || tc.saturation != 1.0 {
                 c = c.with_color_correction(tc.brightness, tc.contrast, tc.saturation);
             }
+            #[allow(clippy::float_cmp)]
+            if tc.opacity != 1.0 {
+                c = c.with_opacity(tc.opacity);
+            }
+            if tc.blend_mode != avio::BlendMode::Normal {
+                c = c.with_blend_mode(tc.blend_mode);
+            }
             c
         };
 
-        let v1_clips: Vec<avio::Clip> = v1.into_iter().map(make_clip).collect();
-        let v2_clips: Vec<avio::Clip> = v2.into_iter().map(make_clip).collect();
+        let avio_video_tracks: Vec<Vec<avio::Clip>> = video_tracks
+            .into_iter()
+            .map(|track| track.into_iter().map(make_clip).collect())
+            .collect();
         let a1_clips: Vec<avio::Clip> = a1.into_iter().map(make_clip).collect();
 
+        let Some(v1_clips) = avio_video_tracks.first() else {
+            log::warn!("spawn_timeline_player: no V1 clips");
+            return;
+        };
         if v1_clips.is_empty() {
             log::warn!("spawn_timeline_player: no V1 clips");
             return;
         }
 
-        let mut builder = avio::Timeline::builder().video_track(v1_clips);
-        if !v2_clips.is_empty() {
-            builder = builder.video_track(v2_clips);
+        let mut builder = avio::Timeline::builder().video_track(avio_video_tracks[0].clone());
+        for vn in avio_video_tracks.into_iter().skip(1) {
+            if !vn.is_empty() {
+                builder = builder.video_track(vn);
+            }
         }
         if !a1_clips.is_empty() {
             builder = builder.audio_track(a1_clips);

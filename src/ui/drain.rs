@@ -215,8 +215,10 @@ fn drain_frame(state: &mut AppState, ctx: &egui::Context) {
                 })
                 .map(|tc| (tc.brightness, tc.contrast, tc.saturation));
 
+            let is_rgba = frame.data.len() == frame.width as usize * frame.height as usize * 4;
             #[allow(clippy::float_cmp)]
-            if let Some((b, c, s)) = correction
+            if is_rgba
+                && let Some((b, c, s)) = correction
                 && (b != 0.0 || c != 1.0 || s != 1.0)
             {
                 apply_eq_rgba(&mut frame.data, b, c, s);
@@ -224,10 +226,22 @@ fn drain_frame(state: &mut AppState, ctx: &egui::Context) {
         } else {
             state.current_pts = Some(frame.pts);
         }
-        let image = egui::ColorImage::from_rgba_unmultiplied(
-            [frame.width as usize, frame.height as usize],
-            &frame.data,
-        );
+        let w = frame.width as usize;
+        let h = frame.height as usize;
+        let pixels = w * h;
+        let image = if frame.data.len() == pixels * 4 {
+            egui::ColorImage::from_rgba_unmultiplied([w, h], &frame.data)
+        } else if frame.data.len() == pixels * 3 {
+            egui::ColorImage::from_rgb([w, h], &frame.data)
+        } else {
+            log::warn!(
+                "drain_frame: unexpected data length {} for {}x{} frame — skipping",
+                frame.data.len(),
+                w,
+                h
+            );
+            return;
+        };
         match &mut state.preview_texture {
             Some(tex) => tex.set(image, egui::TextureOptions::LINEAR),
             None => {

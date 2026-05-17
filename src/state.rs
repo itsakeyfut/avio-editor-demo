@@ -356,12 +356,10 @@ impl EncoderConfigDraft {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum TrackKind {
-    Video1,
-    Video2,
-    Audio1,
+    Video,
+    Audio,
 }
 
-#[allow(dead_code)]
 pub struct Track {
     pub kind: TrackKind,
     pub clips: Vec<TimelineClip>,
@@ -402,31 +400,61 @@ pub struct TimelineClip {
     /// avio gap: `Clip` has no speed field; fast motion is approximated by trimming
     /// `out_point = in_point + source_dur / speed`. Slow motion is unsupported — docs/issue41.md.
     pub speed: f32,
+    /// Overlay opacity for V2 clips. Range: 0.0 (transparent)..=1.0 (fully opaque). Default: 1.0.
+    /// avio gap: `Clip` has no opacity field; `TimelineBuilder` exposes per-track opacity via
+    /// animation only — per-clip opacity is not supported (docs/issue43.md).
+    pub opacity: f32,
+    /// Blend mode for V2 compositing onto V1. Default: `avio::BlendMode::Normal`.
+    /// avio gap: `Clip` has no blend_mode field; `TimelineBuilder` has no blend-mode API for
+    /// overlay tracks — `FilterGraphBuilder::blend()` is not wired into the `Clip` pipeline
+    /// (docs/issue43.md).
+    pub blend_mode: avio::BlendMode,
 }
 
 pub struct TimelineState {
-    pub tracks: [Track; 3],
+    pub tracks: Vec<Track>,
     pub pixels_per_second: f32,
+}
+
+impl TimelineState {
+    /// Number of video tracks (always come before audio tracks in the flat vec).
+    pub fn video_track_count(&self) -> usize {
+        self.tracks
+            .iter()
+            .take_while(|t| t.kind == TrackKind::Video)
+            .count()
+    }
+    /// Index of the first audio track (= video_track_count()).
+    pub fn audio_track_start(&self) -> usize {
+        self.video_track_count()
+    }
+    /// Append a new empty video track before the first audio track.
+    pub fn add_video_track(&mut self) {
+        let audio_start = self.audio_track_start();
+        self.tracks.insert(
+            audio_start,
+            Track {
+                kind: TrackKind::Video,
+                clips: Vec::new(),
+                muted: false,
+                soloed: false,
+            },
+        );
+    }
 }
 
 impl Default for TimelineState {
     fn default() -> Self {
         Self {
-            tracks: [
+            tracks: vec![
                 Track {
-                    kind: TrackKind::Video1,
+                    kind: TrackKind::Video,
                     clips: Vec::new(),
                     muted: false,
                     soloed: false,
                 },
                 Track {
-                    kind: TrackKind::Video2,
-                    clips: Vec::new(),
-                    muted: false,
-                    soloed: false,
-                },
-                Track {
-                    kind: TrackKind::Audio1,
+                    kind: TrackKind::Audio,
                     clips: Vec::new(),
                     muted: false,
                     soloed: false,
