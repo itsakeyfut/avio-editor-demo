@@ -31,13 +31,16 @@ pub struct ExportClip {
     pub saturation: f32,
     /// Per-clip speed multiplier. `1.0` = normal. Applied by trimming `out_point` (avio gap — docs/issue41.md).
     pub speed: f32,
+    /// Per-clip opacity (`1.0` = fully opaque). Forwarded to `Clip::with_opacity`.
+    pub opacity: f32,
+    /// Per-clip blend mode. Forwarded to `Clip::with_blend_mode`.
+    pub blend_mode: avio::BlendMode,
 }
 
 /// Send-safe snapshot of all timeline tracks, constructed on the main thread
 /// before handing off to `spawn_blocking`.
 pub struct ExportSnapshot {
-    pub v1_clips: Vec<ExportClip>,
-    pub v2_clips: Vec<ExportClip>,
+    pub video_clips: Vec<Vec<ExportClip>>,
     pub a1_clips: Vec<ExportClip>,
     pub encoder_config: crate::state::EncoderConfigDraft,
     pub export_filters: crate::state::ExportFilterDraft,
@@ -106,8 +109,19 @@ fn clips_to_avio(clips: Vec<ExportClip>) -> Vec<avio::Clip> {
                 None => clip,
             };
             #[allow(clippy::float_cmp)]
-            if c.brightness != 0.0 || c.contrast != 1.0 || c.saturation != 1.0 {
+            let clip = if c.brightness != 0.0 || c.contrast != 1.0 || c.saturation != 1.0 {
                 clip.with_color_correction(c.brightness, c.contrast, c.saturation)
+            } else {
+                clip
+            };
+            #[allow(clippy::float_cmp)]
+            let clip = if c.opacity != 1.0 {
+                clip.with_opacity(c.opacity)
+            } else {
+                clip
+            };
+            if c.blend_mode != avio::BlendMode::Normal {
+                clip.with_blend_mode(c.blend_mode)
             } else {
                 clip
             }
@@ -123,34 +137,50 @@ fn build_and_render(
     // Compute the estimate before snapshot fields are moved into clips_to_avio.
     // Used as a fallback when avio cannot determine total_frames (clips without out_point).
     let total_frames_estimate: Option<u64> = {
-        let fps = snapshot.v1_clips.first().map(|c| c.fps).unwrap_or(30.0);
+        let fps = snapshot
+            .video_clips
+            .first()
+            .and_then(|v| v.first())
+            .map(|c| c.fps)
+            .unwrap_or(30.0);
         let total_dur: Duration = snapshot
-            .v1_clips
-            .iter()
-            .map(|c| {
-                let end = c.out_point.unwrap_or(c.source_duration);
-                let start = c.in_point.unwrap_or(Duration::ZERO);
-                end.saturating_sub(start)
+            .video_clips
+            .first()
+            .map(|v| {
+                v.iter()
+                    .map(|c| {
+                        let end = c.out_point.unwrap_or(c.source_duration);
+                        let start = c.in_point.unwrap_or(Duration::ZERO);
+                        end.saturating_sub(start)
+                    })
+                    .sum()
             })
-            .sum();
+            .unwrap_or(Duration::ZERO);
         let frames = (total_dur.as_secs_f64() * fps).round() as u64;
         if frames > 0 { Some(frames) } else { None }
     };
 
-    let v1 = clips_to_avio(snapshot.v1_clips);
-    let v2 = clips_to_avio(snapshot.v2_clips);
+    let avio_video: Vec<Vec<avio::Clip>> = snapshot
+        .video_clips
+        .into_iter()
+        .map(clips_to_avio)
+        .collect();
     let a1 = clips_to_avio(snapshot.a1_clips);
 
-    if v1.is_empty() {
+    if avio_video.is_empty() || avio_video[0].is_empty() {
         return Err("V1 track has no clips to export".to_string());
     }
 
     let config = snapshot.encoder_config.to_encoder_config();
 
     // When A1 has no clips, mirror V1 so the video clips' embedded audio is exported.
-    let effective_a1 = if a1.is_empty() { v1.clone() } else { a1 };
+    let effective_a1 = if a1.is_empty() {
+        avio_video[0].clone()
+    } else {
+        a1
+    };
 
-    let mut builder = avio::Timeline::builder().video_track(v1);
+    let mut builder = avio::Timeline::builder().video_track(avio_video[0].clone());
 
     if snapshot.export_filters.scale_enabled {
         builder = builder.canvas(
@@ -164,8 +194,10 @@ fn build_and_render(
     // cannot be attached to Timeline — same gap as color balance (docs/issue13.md).
     // loudness_normalize is stored but not applied during render.
 
-    if !v2.is_empty() {
-        builder = builder.video_track(v2);
+    for vn in avio_video.into_iter().skip(1) {
+        if !vn.is_empty() {
+            builder = builder.video_track(vn);
+        }
     }
     if !effective_a1.is_empty() {
         builder = builder.audio_track(effective_a1);
