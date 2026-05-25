@@ -3,6 +3,8 @@
 assets
 
 .claude/commands/
+.claude/progress/
+
 CLAUDE.md
 SESSION.md
 
