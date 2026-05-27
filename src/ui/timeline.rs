@@ -239,6 +239,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     export_filters: state.export_filters.clone(),
                     loudness_normalize: state.loudness_normalize,
                     loudness_target: state.loudness_target,
+                    title_clips: state.timeline.title_clips.clone(),
                 };
                 state.export = Some(export::spawn_export(snapshot, output_path));
             }
@@ -809,6 +810,91 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
         }
     }
 
+    // ── Title Editor ──────────────────────────────────────────────────────────
+    if let Some(tci) = state.selected_title_clip
+        && let Some(tc) = state.timeline.title_clips.get_mut(tci)
+    {
+        egui::CollapsingHeader::new("Title Properties")
+            .default_open(true)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Text");
+                    ui.text_edit_multiline(&mut tc.text);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Font size");
+                    let mut fs = tc.font_size as f32;
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut fs, 12.0..=120.0)
+                                .suffix(" pt")
+                                .fixed_decimals(0),
+                        )
+                        .changed()
+                    {
+                        tc.font_size = fs as u32;
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Color");
+                    let mut color = egui::Color32::from_rgba_unmultiplied(
+                        tc.color[0],
+                        tc.color[1],
+                        tc.color[2],
+                        tc.color[3],
+                    );
+                    if egui::color_picker::color_edit_button_srgba(
+                        ui,
+                        &mut color,
+                        egui::color_picker::Alpha::OnlyBlend,
+                    )
+                    .changed()
+                    {
+                        tc.color = color.to_array();
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("H-Align");
+                    ui.selectable_value(&mut tc.h_align, state::HAlign::Left, "Left");
+                    ui.selectable_value(&mut tc.h_align, state::HAlign::Centre, "Centre");
+                    ui.selectable_value(&mut tc.h_align, state::HAlign::Right, "Right");
+                });
+                ui.horizontal(|ui| {
+                    ui.label("V-Align");
+                    ui.selectable_value(&mut tc.v_align, state::VAlign::Top, "Top");
+                    ui.selectable_value(&mut tc.v_align, state::VAlign::Middle, "Middle");
+                    ui.selectable_value(&mut tc.v_align, state::VAlign::Bottom, "Bottom");
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Start");
+                    let mut start_secs = tc.start_on_track.as_secs_f32();
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut start_secs)
+                                .suffix(" s")
+                                .speed(0.1),
+                        )
+                        .changed()
+                    {
+                        tc.start_on_track = Duration::from_secs_f32(start_secs.max(0.0));
+                    }
+                    ui.label("Duration");
+                    let mut dur_secs = tc.duration.as_secs_f32();
+                    if ui
+                        .add(egui::DragValue::new(&mut dur_secs).suffix(" s").speed(0.1))
+                        .changed()
+                    {
+                        tc.duration = Duration::from_secs_f32(dur_secs.max(0.1));
+                    }
+                });
+                // avio gap: title clips are UI-only; TimelineBuilder has no drawtext API (docs/issue47.md).
+                ui.weak(
+                    "Title clips render in the UI only and are not exported \
+                         (avio gap — docs/issue47.md).",
+                );
+            });
+    }
+
     ui.separator();
 
     const TRACK_HEIGHT: f32 = 40.0;
@@ -835,6 +921,13 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             })
         })
         .fold(0.0f32, f32::max);
+    // Also account for title clip extents.
+    let max_end_secs = state
+        .timeline
+        .title_clips
+        .iter()
+        .map(|tc| tc.start_on_track.as_secs_f32() + tc.duration.as_secs_f32())
+        .fold(max_end_secs, f32::max);
     let content_width = (max_end_secs * pps + 200.0).max(1200.0);
 
     let mut pending_clips: Vec<(usize, usize, f32)> = Vec::new();
@@ -859,6 +952,21 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
     // track_idx — M or S button clicked this frame
     let mut pending_mute_toggle: Option<usize> = None;
     let mut pending_solo_toggle: Option<usize> = None;
+    // T1 title clip actions
+    let mut new_title_selection: Option<usize> = None;
+    let mut delete_title_clip: Option<usize> = None;
+    // Text preset drops from the browser: (preset_idx, start_secs_on_track)
+    let mut pending_title_drops: Vec<(usize, f32)> = Vec::new();
+    // Title clip drag-to-reposition: (clip_idx, new_start_secs)
+    let mut pending_title_moves: Vec<(usize, f32)> = Vec::new();
+    // Title clip edge-trim: (clip_idx, new_start, new_duration)
+    let mut pending_title_trims: Vec<(usize, Duration, Duration)> = Vec::new();
+    let active_title_drag = state.title_clip_drag.clone();
+    let active_title_trim = state.title_clip_trim.clone();
+    let mut new_title_drag: Option<state::TitleClipDrag> = None;
+    let mut new_title_trim: Option<state::TitleClipTrimDrag> = None;
+    let mut clear_title_drag = false;
+    let mut clear_title_trim = false;
     // Set on clip left-click; applied after the ScrollArea.
     let mut new_selection: Option<(usize, usize)> = None;
     let active_drag = state.clip_drag.clone();
@@ -981,6 +1089,189 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     );
                 }
             }
+
+            // ── Title track (T1) — rendered above all video tracks ─────────────
+            let mut t1_lane_rect = egui::Rect::NOTHING;
+            ui.horizontal(|ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(LABEL_WIDTH, TRACK_HEIGHT),
+                    egui::Layout::top_down(egui::Align::Center),
+                    |ui| {
+                        ui.label("T1");
+                    },
+                );
+
+                let is_text_dnd_hover = ui.input(|i| i.pointer.is_decidedly_dragging())
+                    && ui.rect_contains_pointer(egui::Rect::from_min_size(
+                        ui.cursor().min,
+                        egui::vec2(content_width - LABEL_WIDTH, TRACK_HEIGHT),
+                    ));
+                let t1_bg = if is_text_dnd_hover {
+                    egui::Color32::from_rgb(70, 55, 100)
+                } else {
+                    egui::Color32::from_gray(35)
+                };
+
+                let (t1_rect, t1_resp) = ui.allocate_exact_size(
+                    egui::vec2(content_width - LABEL_WIDTH, TRACK_HEIGHT),
+                    egui::Sense::click(),
+                );
+                t1_lane_rect = t1_rect;
+                ui.painter().rect_filled(t1_rect, 0.0, t1_bg);
+                ui.painter().rect_stroke(
+                    t1_rect,
+                    0.0,
+                    egui::Stroke::new(1.0, egui::Color32::from_gray(60)),
+                    egui::StrokeKind::Inside,
+                );
+
+                for (tci, tc) in state.timeline.title_clips.iter().enumerate() {
+                    let x = t1_rect.left() + tc.start_on_track.as_secs_f32() * pps;
+                    let w = (tc.duration.as_secs_f32() * pps).max(2.0);
+                    let cr = egui::Rect::from_min_size(
+                        egui::pos2(x, t1_rect.top()),
+                        egui::vec2(w, TRACK_HEIGHT),
+                    );
+                    if cr.max.x < t1_rect.left() || cr.min.x > t1_rect.right() {
+                        continue;
+                    }
+                    let is_selected = state.selected_title_clip == Some(tci);
+                    ui.painter()
+                        .rect_filled(cr, 4.0, egui::Color32::from_rgb(200, 150, 50));
+                    let label = if tc.text.is_empty() {
+                        "(title)"
+                    } else {
+                        tc.text.as_str()
+                    };
+                    let clipped_painter = ui.painter().with_clip_rect(cr);
+                    clipped_painter.text(
+                        cr.left_center() + egui::vec2(4.0, 0.0),
+                        egui::Align2::LEFT_CENTER,
+                        label,
+                        egui::FontId::proportional(11.0),
+                        egui::Color32::WHITE,
+                    );
+                    if is_selected {
+                        ui.painter().rect_stroke(
+                            cr,
+                            4.0,
+                            egui::Stroke::new(2.0, egui::Color32::WHITE),
+                            egui::StrokeKind::Outside,
+                        );
+                    }
+                    let clip_id = egui::Id::new(("t1_clip", tci));
+                    let clip_resp = ui.interact(cr, clip_id, egui::Sense::click_and_drag());
+                    if clip_resp.clicked() {
+                        new_title_selection = Some(tci);
+                    }
+
+                    // Resize cursor near trim edges
+                    let near_trim_edge = clip_resp.hovered()
+                        && ui.input(|i| i.pointer.latest_pos()).is_some_and(|ptr| {
+                            ptr.x <= x + TRIM_HANDLE_PX || ptr.x >= x + w - TRIM_HANDLE_PX
+                        });
+                    if near_trim_edge
+                        || active_title_trim
+                            .as_ref()
+                            .is_some_and(|t| t.clip_idx == tci)
+                    {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                    }
+
+                    if clip_resp.drag_started() {
+                        // Auto-pause so the user can resize while the playhead stays.
+                        let is_timeline_playing = state
+                            .timeline_player_thread
+                            .as_ref()
+                            .map(|h| !h.is_finished())
+                            .unwrap_or(false);
+                        if is_timeline_playing && !state.timeline_is_paused {
+                            if let Some(h) = &state.timeline_player_handle {
+                                h.pause();
+                            }
+                            state.timeline_is_paused = true;
+                        }
+                        let ptr_x = ui
+                            .input(|i| i.pointer.press_origin())
+                            .map(|p| p.x)
+                            .unwrap_or(x);
+                        if ptr_x <= x + TRIM_HANDLE_PX {
+                            new_title_trim = Some(state::TitleClipTrimDrag {
+                                clip_idx: tci,
+                                edge: state::TrimEdge::Left,
+                            });
+                        } else if ptr_x >= x + w - TRIM_HANDLE_PX {
+                            new_title_trim = Some(state::TitleClipTrimDrag {
+                                clip_idx: tci,
+                                edge: state::TrimEdge::Right,
+                            });
+                        } else {
+                            let grab = ((ptr_x - t1_rect.left()) / pps
+                                - tc.start_on_track.as_secs_f32())
+                            .max(0.0);
+                            new_title_drag = Some(state::TitleClipDrag {
+                                clip_idx: tci,
+                                grab_offset_secs: grab,
+                            });
+                        }
+                    }
+                    if clip_resp.drag_stopped()
+                        && let Some(ref trim) = active_title_trim
+                        && trim.clip_idx == tci
+                    {
+                        if let Some(ptr) = ui.input(|i| i.pointer.latest_pos()) {
+                            const MIN_DUR_SECS: f32 = 0.1;
+                            match trim.edge {
+                                state::TrimEdge::Right => {
+                                    let new_w = (ptr.x - x).max(MIN_DUR_SECS * pps);
+                                    let new_dur =
+                                        Duration::from_secs_f32((new_w / pps).max(MIN_DUR_SECS));
+                                    pending_title_trims.push((tci, tc.start_on_track, new_dur));
+                                }
+                                state::TrimEdge::Left => {
+                                    let max_start_x = x + w - MIN_DUR_SECS * pps;
+                                    let new_x = ptr.x.min(max_start_x).max(t1_rect.left());
+                                    let new_start = Duration::from_secs_f32(
+                                        ((new_x - t1_rect.left()) / pps).max(0.0),
+                                    );
+                                    let old_end = tc.start_on_track + tc.duration;
+                                    let new_dur = old_end
+                                        .saturating_sub(new_start)
+                                        .max(Duration::from_secs_f32(MIN_DUR_SECS));
+                                    pending_title_trims.push((tci, new_start, new_dur));
+                                }
+                            }
+                        }
+                        clear_title_trim = true;
+                    }
+                    if clip_resp.drag_stopped()
+                        && let Some(ref drag) = active_title_drag
+                        && drag.clip_idx == tci
+                    {
+                        if let Some(ptr) = ui.input(|i| i.pointer.latest_pos()) {
+                            let raw_start =
+                                ((ptr.x - t1_rect.left()) / pps - drag.grab_offset_secs).max(0.0);
+                            pending_title_moves.push((tci, raw_start));
+                        }
+                        clear_title_drag = true;
+                    }
+                    clip_resp.context_menu(|ui| {
+                        if ui.button("Delete").clicked() {
+                            delete_title_clip = Some(tci);
+                            ui.close();
+                        }
+                    });
+                }
+
+                // Receive text preset drops from the browser.
+                if let Some(payload) = t1_resp.dnd_release_payload::<state::TextClipDragIdx>() {
+                    let ptr_x = ui
+                        .input(|i| i.pointer.latest_pos().map(|p| p.x))
+                        .unwrap_or(t1_rect.left());
+                    let start_secs = ((ptr_x - t1_rect.left()) / pps).max(0.0);
+                    pending_title_drops.push((payload.0, start_secs));
+                }
+            });
 
             // ── Track lanes ────────────────────────────────────────────────────
             for (track_idx, track) in state.timeline.tracks.iter().enumerate() {
@@ -1954,6 +2245,66 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 }
             }
 
+            // ── T1 ghost clip while dragging title ──────────────────────────────
+            if let Some(ref drag) = active_title_drag
+                && let Some(ptr) = ui.input(|i| i.pointer.latest_pos())
+                && let Some(tc) = state.timeline.title_clips.get(drag.clip_idx)
+            {
+                let ghost_dur = tc.duration.as_secs_f32();
+                let ghost_start =
+                    ((ptr.x - t1_lane_rect.left()) / pps - drag.grab_offset_secs).max(0.0);
+                let ghost_rect = egui::Rect::from_min_size(
+                    egui::pos2(t1_lane_rect.left() + ghost_start * pps, t1_lane_rect.top()),
+                    egui::vec2((ghost_dur * pps).max(2.0), TRACK_HEIGHT),
+                );
+                ui.painter().rect_filled(
+                    ghost_rect,
+                    4.0,
+                    egui::Color32::from_rgba_premultiplied(200, 150, 50, 120),
+                );
+                ui.painter().rect_stroke(
+                    ghost_rect,
+                    4.0,
+                    egui::Stroke::new(1.5, egui::Color32::WHITE),
+                    egui::StrokeKind::Outside,
+                );
+            }
+            // ── T1 trim ghost ────────────────────────────────────────────────────
+            if let Some(ref trim) = active_title_trim
+                && let Some(ptr) = ui.input(|i| i.pointer.latest_pos())
+                && let Some(tc) = state.timeline.title_clips.get(trim.clip_idx)
+            {
+                const MIN_DUR_SECS: f32 = 0.1;
+                let orig_x = t1_lane_rect.left() + tc.start_on_track.as_secs_f32() * pps;
+                let orig_w = tc.duration.as_secs_f32() * pps;
+                let (ghost_left, ghost_w) = match trim.edge {
+                    state::TrimEdge::Right => {
+                        let new_w = (ptr.x - orig_x).max(MIN_DUR_SECS * pps);
+                        (orig_x, new_w)
+                    }
+                    state::TrimEdge::Left => {
+                        let max_start_x = orig_x + orig_w - MIN_DUR_SECS * pps;
+                        let new_x = ptr.x.min(max_start_x).max(t1_lane_rect.left());
+                        (new_x, orig_x + orig_w - new_x)
+                    }
+                };
+                let ghost_rect = egui::Rect::from_min_size(
+                    egui::pos2(ghost_left, t1_lane_rect.top()),
+                    egui::vec2(ghost_w.max(2.0), TRACK_HEIGHT),
+                );
+                ui.painter().rect_filled(
+                    ghost_rect,
+                    4.0,
+                    egui::Color32::from_rgba_premultiplied(200, 150, 50, 120),
+                );
+                ui.painter().rect_stroke(
+                    ghost_rect,
+                    4.0,
+                    egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 200, 0)),
+                    egui::StrokeKind::Outside,
+                );
+            }
+
             // ── Playhead ────────────────────────────────────────────────────────
             let playhead_x = timeline_left + state.timeline_playhead_secs as f32 * pps;
             let tracks_bottom =
@@ -2004,6 +2355,95 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
     // Apply timeline selection change.
     if let Some(sel) = new_selection {
         state.timeline_selected = Some(sel);
+        state.selected_title_clip = None;
+    }
+
+    // Apply T1 title clip actions.
+    if let Some(idx) = new_title_selection {
+        state.selected_title_clip = Some(idx);
+        state.timeline_selected = None;
+    }
+    for (preset_idx, start_secs) in pending_title_drops {
+        if let Some(preset) = state.text_presets.get(preset_idx) {
+            let start = Duration::from_secs_f32(start_secs);
+            let new_tc = state::TitleClip {
+                start_on_track: start,
+                duration: Duration::from_secs_f32(preset.default_duration_secs),
+                text: preset.text.clone(),
+                font_size: preset.font_size,
+                color: preset.color,
+                h_align: preset.h_align,
+                v_align: preset.v_align,
+            };
+            state.timeline.title_clips.push(new_tc);
+            state.timeline.title_clips.sort_by_key(|c| c.start_on_track);
+            if let Some(idx) = state
+                .timeline
+                .title_clips
+                .iter()
+                .position(|c| c.start_on_track == start)
+            {
+                state.selected_title_clip = Some(idx);
+                state.timeline_selected = None;
+            }
+        }
+    }
+    if let Some(idx) = delete_title_clip
+        && idx < state.timeline.title_clips.len()
+    {
+        state.timeline.title_clips.remove(idx);
+        match state.selected_title_clip {
+            Some(sel) if sel == idx => state.selected_title_clip = None,
+            Some(sel) if sel > idx => state.selected_title_clip = Some(sel - 1),
+            _ => {}
+        }
+    }
+
+    // Apply title clip moves.
+    let had_title_moves = !pending_title_moves.is_empty();
+    let title_clips_before = state.timeline.title_clips.clone();
+    for (clip_idx, new_start_secs) in pending_title_moves {
+        if let Some(tc) = state.timeline.title_clips.get_mut(clip_idx) {
+            tc.start_on_track = Duration::from_secs_f32(new_start_secs);
+        }
+        state.timeline.title_clips.sort_by_key(|c| c.start_on_track);
+        // Keep selection pointing at the same clip after sort.
+        if let Some(tc) = state.timeline.title_clips.get(clip_idx) {
+            let start = tc.start_on_track;
+            if let Some(new_idx) = state
+                .timeline
+                .title_clips
+                .iter()
+                .position(|c| c.start_on_track == start)
+            {
+                state.selected_title_clip = Some(new_idx);
+            }
+        }
+    }
+    if had_title_moves && title_clips_before != state.timeline.title_clips {
+        state.push_edit(state::EditCommand::TitleSnapshot {
+            before: title_clips_before,
+            after: state.timeline.title_clips.clone(),
+            label: "Move Title Clip",
+        });
+    }
+
+    // Apply title clip trims.
+    let had_title_trims = !pending_title_trims.is_empty();
+    let title_clips_before_trim = state.timeline.title_clips.clone();
+    for (clip_idx, new_start, new_dur) in pending_title_trims {
+        if let Some(tc) = state.timeline.title_clips.get_mut(clip_idx) {
+            tc.start_on_track = new_start;
+            tc.duration = new_dur;
+        }
+        state.timeline.title_clips.sort_by_key(|c| c.start_on_track);
+    }
+    if had_title_trims && title_clips_before_trim != state.timeline.title_clips {
+        state.push_edit(state::EditCommand::TitleSnapshot {
+            before: title_clips_before_trim,
+            after: state.timeline.title_clips.clone(),
+            label: "Trim Title Clip",
+        });
     }
 
     // Copy selected clip to clipboard (Ctrl+C).
@@ -2095,6 +2535,18 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
     }
     if let Some(nt) = new_trim {
         state.clip_trim = Some(nt);
+    }
+    if clear_title_drag {
+        state.title_clip_drag = None;
+    }
+    if let Some(ntd) = new_title_drag {
+        state.title_clip_drag = Some(ntd);
+    }
+    if clear_title_trim {
+        state.title_clip_trim = None;
+    }
+    if let Some(ntt) = new_title_trim {
+        state.title_clip_trim = Some(ntt);
     }
     if moved_while_paused {
         state.clips_moved_while_paused = true;

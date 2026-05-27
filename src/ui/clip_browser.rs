@@ -3,10 +3,241 @@ use std::time::Duration;
 
 use crate::{analysis, gif, player, proxy, sprite, state, thumbnail, trim};
 
+fn show_text_tab(state: &mut state::AppState, ui: &mut egui::Ui) {
+    // ── "+" button to create a new preset ────────────────────────────────────
+    ui.horizontal(|ui| {
+        ui.label("Text Clips");
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .button("+")
+                .on_hover_text("Create new text clip")
+                .clicked()
+            {
+                let n = state.text_presets.len() + 1;
+                state.text_presets.push(state::TextClipPreset {
+                    name: format!("Title {n}"),
+                    ..Default::default()
+                });
+                state.selected_text_preset = Some(state.text_presets.len() - 1);
+            }
+        });
+    });
+    ui.separator();
+
+    // ── Preset list with drag sources ────────────────────────────────────────
+    let mut clicked_preset: Option<usize> = None;
+    let mut delete_preset: Option<usize> = None;
+
+    egui::ScrollArea::vertical()
+        .id_salt("text_preset_scroll")
+        .max_height(200.0)
+        .show(ui, |ui| {
+            for (idx, preset) in state.text_presets.iter().enumerate() {
+                let selected = state.selected_text_preset == Some(idx);
+                let dnd_id = egui::Id::new(("text_preset_dnd", idx));
+                let is_dragging = ui.ctx().is_being_dragged(dnd_id);
+
+                let card_bg = if selected {
+                    egui::Color32::from_rgba_premultiplied(80, 60, 160, 120)
+                } else {
+                    egui::Color32::from_rgb(45, 40, 60)
+                };
+
+                let dnd = ui.dnd_drag_source(dnd_id, state::TextClipDragIdx(idx), |ui| {
+                    egui::Frame::new()
+                        .fill(card_bg)
+                        .corner_radius(egui::CornerRadius::same(4))
+                        .inner_margin(egui::Margin::same(6))
+                        .show(ui, |ui| {
+                            ui.set_min_width(ui.available_width());
+                            // Colour swatch + name
+                            ui.horizontal(|ui| {
+                                let [r, g, b, _] = preset.color;
+                                let swatch_color = egui::Color32::from_rgb(r, g, b);
+                                let (swatch_rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(12.0, 12.0),
+                                    egui::Sense::hover(),
+                                );
+                                ui.painter().rect_filled(swatch_rect, 2.0, swatch_color);
+                                ui.add(
+                                    egui::Label::new(egui::RichText::new(&preset.name).small())
+                                        .truncate(),
+                                );
+                            });
+                            // Preview text (dimmed)
+                            if !preset.text.is_empty() {
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&preset.text)
+                                            .small()
+                                            .color(egui::Color32::from_gray(160))
+                                            .italics(),
+                                    )
+                                    .truncate(),
+                                );
+                            }
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(format!(
+                                        "{} pt · {}s",
+                                        preset.font_size, preset.default_duration_secs
+                                    ))
+                                    .small()
+                                    .color(egui::Color32::from_gray(130)),
+                                )
+                                .truncate(),
+                            );
+                        });
+                });
+
+                if is_dragging {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                }
+
+                let card_resp = ui.interact(
+                    dnd.response.rect,
+                    egui::Id::new(("text_preset_click", idx)),
+                    egui::Sense::click(),
+                );
+                if card_resp.clicked() {
+                    clicked_preset = Some(idx);
+                }
+                card_resp.context_menu(|ui| {
+                    if ui.button("Delete").clicked() {
+                        delete_preset = Some(idx);
+                        ui.close();
+                    }
+                });
+            }
+        });
+
+    if let Some(idx) = clicked_preset {
+        state.selected_text_preset = Some(idx);
+    }
+    if let Some(idx) = delete_preset {
+        state.text_presets.remove(idx);
+        state.selected_text_preset = state.selected_text_preset.and_then(|sel| {
+            if sel == idx {
+                None
+            } else if sel > idx {
+                Some(sel - 1)
+            } else {
+                Some(sel)
+            }
+        });
+    }
+
+    // ── Selected preset properties ────────────────────────────────────────────
+    if let Some(idx) = state.selected_text_preset
+        && let Some(preset) = state.text_presets.get_mut(idx)
+    {
+        ui.separator();
+        egui::CollapsingHeader::new("Preset Properties")
+            .default_open(true)
+            .show(ui, |ui| {
+                egui::Grid::new("text_preset_props")
+                    .num_columns(2)
+                    .spacing([8.0, 4.0])
+                    .show(ui, |ui| {
+                        ui.label("Name");
+                        ui.text_edit_singleline(&mut preset.name);
+                        ui.end_row();
+
+                        ui.label("Text");
+                        ui.text_edit_multiline(&mut preset.text);
+                        ui.end_row();
+
+                        ui.label("Font size");
+                        let mut fs = preset.font_size as f32;
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut fs, 12.0..=120.0)
+                                    .suffix(" pt")
+                                    .fixed_decimals(0),
+                            )
+                            .changed()
+                        {
+                            preset.font_size = fs as u32;
+                        }
+                        ui.end_row();
+
+                        ui.label("Color");
+                        let mut color = egui::Color32::from_rgba_unmultiplied(
+                            preset.color[0],
+                            preset.color[1],
+                            preset.color[2],
+                            preset.color[3],
+                        );
+                        if egui::color_picker::color_edit_button_srgba(
+                            ui,
+                            &mut color,
+                            egui::color_picker::Alpha::OnlyBlend,
+                        )
+                        .changed()
+                        {
+                            preset.color = color.to_array();
+                        }
+                        ui.end_row();
+
+                        ui.label("H-Align");
+                        ui.horizontal(|ui| {
+                            ui.selectable_value(&mut preset.h_align, state::HAlign::Left, "Left");
+                            ui.selectable_value(
+                                &mut preset.h_align,
+                                state::HAlign::Centre,
+                                "Centre",
+                            );
+                            ui.selectable_value(&mut preset.h_align, state::HAlign::Right, "Right");
+                        });
+                        ui.end_row();
+
+                        ui.label("V-Align");
+                        ui.horizontal(|ui| {
+                            ui.selectable_value(&mut preset.v_align, state::VAlign::Top, "Top");
+                            ui.selectable_value(
+                                &mut preset.v_align,
+                                state::VAlign::Middle,
+                                "Middle",
+                            );
+                            ui.selectable_value(
+                                &mut preset.v_align,
+                                state::VAlign::Bottom,
+                                "Bottom",
+                            );
+                        });
+                        ui.end_row();
+
+                        ui.label("Duration");
+                        ui.add(
+                            egui::DragValue::new(&mut preset.default_duration_secs)
+                                .suffix(" s")
+                                .range(0.1..=600.0)
+                                .speed(0.1),
+                        );
+                        ui.end_row();
+                    });
+                ui.weak("Drag this preset onto the T1 track to place a title clip.");
+            });
+    }
+}
+
 pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context) {
     ui.heading("Clip Browser");
     ui.separator();
 
+    // ── Tab bar ──────────────────────────────────────────────────────────────
+    ui.horizontal(|ui| {
+        ui.selectable_value(&mut state.browser_tab, state::BrowserTab::Media, "Media");
+        ui.selectable_value(&mut state.browser_tab, state::BrowserTab::Text, "Text");
+    });
+    ui.separator();
+
+    if state.browser_tab == state::BrowserTab::Text {
+        show_text_tab(state, ui);
+        return;
+    }
+
+    // ── Media tab ────────────────────────────────────────────────────────────
     if ui.button("Import").clicked()
         && let Some(paths) = rfd::FileDialog::new()
             .add_filter(

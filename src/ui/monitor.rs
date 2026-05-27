@@ -38,7 +38,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
 
     if timeline_is_active {
         if let Some(tex) = &state.preview_texture {
-            ui.image(egui::load::SizedTexture::new(tex.id(), video_size));
+            let img_resp = ui.image(egui::load::SizedTexture::new(tex.id(), video_size));
+            draw_title_overlays(state, ui, img_resp.rect);
         } else {
             ui.allocate_ui(video_size, |ui| {
                 ui.centered_and_justified(|ui| {
@@ -403,6 +404,78 @@ fn spawn_and_store(
     state.pending_proxy_rx = Some(proxy_rx);
     state.proxy_active = false;
     state.is_paused = false;
+}
+
+/// Draws active T1 title clips as egui text on top of the preview image rect.
+fn draw_title_overlays(state: &state::AppState, ui: &egui::Ui, img_rect: egui::Rect) {
+    let t = state.timeline_playhead_secs;
+    let painter = ui.painter();
+
+    for tc in &state.timeline.title_clips {
+        if tc.text.is_empty() {
+            continue;
+        }
+        let start = tc.start_on_track.as_secs_f64();
+        let end = start + tc.duration.as_secs_f64();
+        if t < start || t >= end {
+            continue;
+        }
+
+        let [r, g, b, a] = tc.color;
+        let color = egui::Color32::from_rgba_unmultiplied(r, g, b, a);
+
+        // Scale font proportionally to preview width (assumes 1920-wide reference).
+        let font_size = (tc.font_size as f32 * img_rect.width() / 1920.0).max(8.0);
+
+        let pos = match (tc.h_align, tc.v_align) {
+            (state::HAlign::Left, state::VAlign::Top) => {
+                egui::pos2(img_rect.left() + 10.0, img_rect.top() + 10.0)
+            }
+            (state::HAlign::Left, state::VAlign::Middle) => {
+                egui::pos2(img_rect.left() + 10.0, img_rect.center().y)
+            }
+            (state::HAlign::Left, state::VAlign::Bottom) => {
+                egui::pos2(img_rect.left() + 10.0, img_rect.bottom() - 10.0)
+            }
+            (state::HAlign::Centre, state::VAlign::Top) => {
+                egui::pos2(img_rect.center().x, img_rect.top() + 10.0)
+            }
+            (state::HAlign::Centre, state::VAlign::Middle) => img_rect.center(),
+            (state::HAlign::Centre, state::VAlign::Bottom) => {
+                egui::pos2(img_rect.center().x, img_rect.bottom() - 10.0)
+            }
+            (state::HAlign::Right, state::VAlign::Top) => {
+                egui::pos2(img_rect.right() - 10.0, img_rect.top() + 10.0)
+            }
+            (state::HAlign::Right, state::VAlign::Middle) => {
+                egui::pos2(img_rect.right() - 10.0, img_rect.center().y)
+            }
+            (state::HAlign::Right, state::VAlign::Bottom) => {
+                egui::pos2(img_rect.right() - 10.0, img_rect.bottom() - 10.0)
+            }
+        };
+
+        let halign = match tc.h_align {
+            state::HAlign::Left => egui::Align2::LEFT_CENTER,
+            state::HAlign::Centre => egui::Align2::CENTER_CENTER,
+            state::HAlign::Right => egui::Align2::RIGHT_CENTER,
+        };
+        let valign = match tc.v_align {
+            state::VAlign::Top => egui::Align2::CENTER_TOP,
+            state::VAlign::Middle => egui::Align2::CENTER_CENTER,
+            state::VAlign::Bottom => egui::Align2::CENTER_BOTTOM,
+        };
+        // Combine h and v alignment into a single Align2.
+        let align = egui::Align2([halign.x(), valign.y()]);
+
+        painter.text(
+            pos,
+            align,
+            &tc.text,
+            egui::FontId::proportional(font_size),
+            color,
+        );
+    }
 }
 
 fn snap_to_nearest_keyframe(
