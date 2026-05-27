@@ -27,6 +27,21 @@ pub struct TimelineClipDrag {
     pub grab_offset_secs: f32,
 }
 
+/// Tracks an in-progress T1 title clip drag-to-reposition operation.
+#[derive(Clone)]
+pub struct TitleClipDrag {
+    pub clip_idx: usize,
+    /// Seconds from the clip's left edge to where the user grabbed it.
+    pub grab_offset_secs: f32,
+}
+
+/// Tracks an in-progress T1 title clip edge-trim operation.
+#[derive(Clone)]
+pub struct TitleClipTrimDrag {
+    pub clip_idx: usize,
+    pub edge: TrimEdge,
+}
+
 /// A reversible timeline edit stored as per-track clip-vec snapshots.
 /// Undo = restore `before`; redo = restore `after`.
 #[derive(Clone)]
@@ -36,12 +51,18 @@ pub enum EditCommand {
         snapshots: Vec<(usize, Vec<TimelineClip>, Vec<TimelineClip>)>,
         label: &'static str,
     },
+    TitleSnapshot {
+        before: Vec<TitleClip>,
+        after: Vec<TitleClip>,
+        label: &'static str,
+    },
 }
 
 impl EditCommand {
     pub fn label(&self) -> &'static str {
         match self {
             Self::TrackSnapshot { label, .. } => label,
+            Self::TitleSnapshot { label, .. } => label,
         }
     }
 }
@@ -104,6 +125,8 @@ pub struct AppState {
     pub loudness_rx: mpsc::Receiver<Option<LoudnessResult>>,
     pub clip_drag: Option<TimelineClipDrag>,
     pub clip_trim: Option<TimelineClipTrimDrag>,
+    pub title_clip_drag: Option<TitleClipDrag>,
+    pub title_clip_trim: Option<TitleClipTrimDrag>,
     pub show_export_settings: bool,
     pub theme_preference: egui::ThemePreference,
     pub undo_stack: Vec<EditCommand>,
@@ -121,6 +144,14 @@ pub struct AppState {
     pub timeline_loop_in: Option<std::time::Duration>,
     pub timeline_loop_out: Option<std::time::Duration>,
     pub timeline_loop_enabled: bool,
+    /// Index into `TimelineState::title_clips` of the currently selected title clip.
+    pub selected_title_clip: Option<usize>,
+    /// Active tab in the clip browser left panel.
+    pub browser_tab: BrowserTab,
+    /// Text clip presets stored in the browser's Text tab.
+    pub text_presets: Vec<TextClipPreset>,
+    /// Index into `text_presets` of the currently selected preset in the browser.
+    pub selected_text_preset: Option<usize>,
 }
 
 impl Default for AppState {
@@ -183,6 +214,8 @@ impl Default for AppState {
             loudness_rx,
             clip_drag: None,
             clip_trim: None,
+            title_clip_drag: None,
+            title_clip_trim: None,
             show_export_settings: false,
             theme_preference: egui::ThemePreference::System,
             undo_stack: Vec::new(),
@@ -194,6 +227,10 @@ impl Default for AppState {
             timeline_loop_in: None,
             timeline_loop_out: None,
             timeline_loop_enabled: false,
+            selected_title_clip: None,
+            browser_tab: BrowserTab::Media,
+            text_presets: Vec::new(),
+            selected_text_preset: None,
         }
     }
 }
@@ -354,10 +391,81 @@ impl EncoderConfigDraft {
     }
 }
 
+/// Which tab is active in the clip browser left panel.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum BrowserTab {
+    Media,
+    Text,
+}
+
+/// A text clip template stored in the browser's Text tab.
+///
+/// When dragged onto the T1 lane a [`TitleClip`] is created from this preset.
+#[derive(Clone)]
+pub struct TextClipPreset {
+    pub name: String,
+    pub text: String,
+    pub font_size: u32,
+    /// RGBA colour, 0–255 per channel.
+    pub color: [u8; 4],
+    pub h_align: HAlign,
+    pub v_align: VAlign,
+    /// Default duration applied when the preset is dropped onto the timeline.
+    pub default_duration_secs: f32,
+}
+
+impl Default for TextClipPreset {
+    fn default() -> Self {
+        Self {
+            name: "New Title".to_string(),
+            text: String::new(),
+            font_size: 48,
+            color: [255, 255, 255, 255],
+            h_align: HAlign::Centre,
+            v_align: VAlign::Middle,
+            default_duration_secs: 3.0,
+        }
+    }
+}
+
+/// Drag-and-drop payload for text clip presets dragged from the browser to the T1 lane.
+#[derive(Clone, Copy)]
+pub struct TextClipDragIdx(pub usize);
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum TrackKind {
     Video,
     Audio,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum HAlign {
+    Left,
+    Centre,
+    Right,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum VAlign {
+    Top,
+    Middle,
+    Bottom,
+}
+
+/// A text title clip on the T1 track.
+///
+/// Title clips are UI-only; `TimelineBuilder` has no drawtext or graphics overlay API
+/// (docs/issue47.md). Stored in `TimelineState::title_clips` (not in the video `Track` vec).
+#[derive(Clone, PartialEq)]
+pub struct TitleClip {
+    pub start_on_track: Duration,
+    pub duration: Duration,
+    pub text: String,
+    pub font_size: u32,
+    /// RGBA colour, 0–255 per channel.
+    pub color: [u8; 4],
+    pub h_align: HAlign,
+    pub v_align: VAlign,
 }
 
 pub struct Track {
@@ -414,6 +522,10 @@ pub struct TimelineClip {
 pub struct TimelineState {
     pub tracks: Vec<Track>,
     pub pixels_per_second: f32,
+    /// Title clips on the T1 track (displayed above V1 in the UI).
+    ///
+    /// avio gap: these are UI-only; `TimelineBuilder` has no text overlay API (docs/issue47.md).
+    pub title_clips: Vec<TitleClip>,
 }
 
 impl TimelineState {
@@ -461,6 +573,7 @@ impl Default for TimelineState {
                 },
             ],
             pixels_per_second: 60.0,
+            title_clips: Vec::new(),
         }
     }
 }
@@ -518,6 +631,9 @@ impl AppState {
                         self.timeline.tracks[*ti].clips = before.clone();
                     }
                 }
+                EditCommand::TitleSnapshot { before, .. } => {
+                    self.timeline.title_clips = before.clone();
+                }
             }
             self.redo_stack.push(cmd);
             self.clips_moved_while_paused = true;
@@ -532,6 +648,9 @@ impl AppState {
                     for (ti, _, after) in snapshots {
                         self.timeline.tracks[*ti].clips = after.clone();
                     }
+                }
+                EditCommand::TitleSnapshot { after, .. } => {
+                    self.timeline.title_clips = after.clone();
                 }
             }
             self.undo_stack.push(cmd);

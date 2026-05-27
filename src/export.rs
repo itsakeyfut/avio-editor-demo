@@ -49,6 +49,8 @@ pub struct ExportSnapshot {
     pub loudness_normalize: bool,
     #[allow(dead_code)]
     pub loudness_target: f64,
+    /// Title clips from the T1 track — converted to a lavfi drawtext overlay.
+    pub title_clips: Vec<crate::state::TitleClip>,
 }
 
 /// Spawns a background task that builds an `avio::Timeline` from the snapshot
@@ -129,6 +131,59 @@ fn clips_to_avio(clips: Vec<ExportClip>) -> Vec<avio::Clip> {
         .collect()
 }
 
+/// Builds an FFmpeg `lavfi` filtergraph string from T1 title clips.
+///
+/// Returns `None` when there are no non-empty title clips.  The string is
+/// passed to [`avio::TimelineBuilder::lavfi_overlay`] and interpreted by the
+/// `movie` filter's `format_name=lavfi` path in `ff-filter`.
+fn build_lavfi_overlay_filter(
+    title_clips: &[crate::state::TitleClip],
+    w: u32,
+    h: u32,
+    timeline_dur_secs: f64,
+) -> Option<String> {
+    let non_empty: Vec<_> = title_clips
+        .iter()
+        .filter(|tc| !tc.text.is_empty())
+        .collect();
+    if non_empty.is_empty() {
+        return None;
+    }
+
+    // Transparent canvas lasting exactly as long as the video content.
+    let mut chain = format!("color=s={w}x{h}:c=black@0.0:d={timeline_dur_secs:.3}");
+
+    for tc in non_empty {
+        let start_t = tc.start_on_track.as_secs_f64();
+        let end_t = start_t + tc.duration.as_secs_f64();
+        let [r, g, b, _] = tc.color;
+        let fontcolor = format!("#{r:02x}{g:02x}{b:02x}");
+
+        // Escape user text for the lavfi drawtext `text=` option.
+        // Within single-quotes the lavfi parser treats `'` as end-of-quote,
+        // so we close-quote, insert an escaped apostrophe, then re-open.
+        let text = tc.text.replace('\\', "\\\\").replace('\'', "'\\''");
+
+        let x_expr = match tc.h_align {
+            crate::state::HAlign::Left => "10",
+            crate::state::HAlign::Centre => "(w-text_w)/2",
+            crate::state::HAlign::Right => "w-text_w-10",
+        };
+        let y_expr = match tc.v_align {
+            crate::state::VAlign::Top => "10",
+            crate::state::VAlign::Middle => "(h-text_h)/2",
+            crate::state::VAlign::Bottom => "h-text_h-10",
+        };
+
+        chain = format!(
+            "{chain},drawtext=text='{text}':fontsize={fs}:fontcolor={fontcolor}\
+             :x={x_expr}:y={y_expr}:enable='between(t,{start_t:.3},{end_t:.3})'",
+            fs = tc.font_size,
+        );
+    }
+    Some(chain)
+}
+
 fn build_and_render(
     snapshot: ExportSnapshot,
     output: &std::path::Path,
@@ -158,6 +213,34 @@ fn build_and_render(
             .unwrap_or(Duration::ZERO);
         let frames = (total_dur.as_secs_f64() * fps).round() as u64;
         if frames > 0 { Some(frames) } else { None }
+    };
+
+    // Total timeline duration: the latest end-time of any clip across all video tracks.
+    // Used to bound the lavfi overlay duration so the composition terminates correctly.
+    let timeline_dur_secs: f64 = snapshot
+        .video_clips
+        .iter()
+        .flat_map(|track| track.iter())
+        .map(|c| {
+            let dur = c
+                .out_point
+                .zip(c.in_point)
+                .map(|(op, ip)| op.saturating_sub(ip))
+                .or(c.out_point)
+                .unwrap_or(c.source_duration);
+            c.start_on_track.as_secs_f64() + dur.as_secs_f64()
+        })
+        .fold(0.0_f64, f64::max);
+
+    let lavfi_overlay = if timeline_dur_secs > 0.0 {
+        build_lavfi_overlay_filter(
+            &snapshot.title_clips,
+            snapshot.export_filters.output_width,
+            snapshot.export_filters.output_height,
+            timeline_dur_secs,
+        )
+    } else {
+        None
     };
 
     let avio_video: Vec<Vec<avio::Clip>> = snapshot
@@ -201,6 +284,9 @@ fn build_and_render(
     }
     if !effective_a1.is_empty() {
         builder = builder.audio_track(effective_a1);
+    }
+    if let Some(lavfi_str) = lavfi_overlay {
+        builder = builder.lavfi_overlay(lavfi_str);
     }
 
     let timeline = builder.build().map_err(|e| e.to_string())?;
