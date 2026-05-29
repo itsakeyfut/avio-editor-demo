@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, AtomicU64};
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
@@ -115,7 +115,8 @@ pub struct AppState {
     /// of calling h.play() on the stale runner.
     pub clips_moved_while_paused: bool,
     pub av_offset_ms: i32,
-    pub export: Option<ExportHandle>,
+    pub export_queue: Vec<crate::export::QueueJob>,
+    pub queue_rendering: bool,
     pub encoder_config: EncoderConfigDraft,
     pub export_filters: ExportFilterDraft,
     pub loudness_result: Option<LoudnessResult>,
@@ -209,7 +210,8 @@ impl Default for AppState {
             timeline_is_paused: false,
             clips_moved_while_paused: false,
             av_offset_ms: 0,
-            export: None,
+            export_queue: Vec::new(),
+            queue_rendering: false,
             encoder_config: EncoderConfigDraft::default(),
             export_filters: ExportFilterDraft::default(),
             loudness_result: None,
@@ -320,18 +322,14 @@ pub struct ProxyJobHandle {
     pub status: Arc<Mutex<ProxyStatus>>,
 }
 
+/// Status of a single queued export job.
 #[derive(Clone, PartialEq)]
-pub enum ExportStatus {
+pub enum QueueJobStatus {
+    Pending,
     Running,
     Done(PathBuf),
     Failed(String),
-}
-
-pub struct ExportHandle {
-    pub status: Arc<Mutex<ExportStatus>>,
-    /// Export progress `0.0..=1.0` stored as `f32::to_bits()`. `0.0` until the
-    /// first progress callback fires.
-    pub progress: Arc<AtomicU32>,
+    Cancelled,
 }
 
 /// EBU R128 loudness measurement result.
