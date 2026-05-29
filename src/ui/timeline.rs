@@ -211,6 +211,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     .save_file()
             {
                 let clips = &state.clips;
+                let use_proxies = state.export_use_proxies;
                 let make_clip = |tc: &state::TimelineClip| {
                     let src = &clips[tc.source_index];
                     export::ExportClip {
@@ -231,6 +232,11 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         speed: tc.speed,
                         opacity: tc.opacity,
                         blend_mode: tc.blend_mode,
+                        proxy_path: if use_proxies {
+                            src.proxy_path.clone()
+                        } else {
+                            None
+                        },
                     }
                 };
                 let tracks = &state.timeline.tracks;
@@ -410,6 +416,15 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     }
                 });
             }
+
+            ui.checkbox(
+                &mut state.export_use_proxies,
+                "Use proxies for export (faster, lower quality)",
+            )
+            .on_hover_text(
+                "Decode from each clip's proxy (when generated) and scale up to the \
+                 original resolution. Uses avio's Clip::proxy API.",
+            );
 
             ui.separator();
 
