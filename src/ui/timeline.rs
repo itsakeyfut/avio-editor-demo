@@ -240,6 +240,16 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     loudness_normalize: state.loudness_normalize,
                     loudness_target: state.loudness_target,
                     title_clips: state.timeline.title_clips.clone(),
+                    export_in: if state.export_range_enabled {
+                        state.export_in
+                    } else {
+                        None
+                    },
+                    export_out: if state.export_range_enabled {
+                        state.export_out
+                    } else {
+                        None
+                    },
                 };
                 state.export = Some(export::spawn_export(snapshot, output_path));
             }
@@ -330,6 +340,58 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     }
                 }
             });
+
+            ui.separator();
+
+            // Export Range section
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut state.export_range_enabled, "Export Range only");
+                if state.export_range_enabled {
+                    match (state.export_in, state.export_out) {
+                        (Some(ei), Some(eo)) if ei < eo => {
+                            let d = (eo - ei).as_secs_f64();
+                            ui.label(format!(
+                                "{:02}:{:02}.{:03}",
+                                (d / 60.0) as u64,
+                                (d % 60.0) as u64,
+                                ((d % 1.0) * 1000.0) as u64
+                            ));
+                        }
+                        _ => {
+                            ui.weak("Set I/O markers on ruler");
+                        }
+                    }
+                }
+            });
+            if state.export_range_enabled {
+                let fmt_tc = |d: Option<std::time::Duration>| {
+                    d.map(|d| {
+                        let s = d.as_secs_f64();
+                        format!(
+                            "{:02}:{:02}.{:03}",
+                            (s / 60.0) as u64,
+                            (s % 60.0) as u64,
+                            ((s % 1.0) * 1000.0) as u64
+                        )
+                    })
+                    .unwrap_or_else(|| "--:--.---".to_string())
+                };
+                ui.horizontal(|ui| {
+                    ui.label(format!("IN: {}", fmt_tc(state.export_in)));
+                    if ui.small_button("Set").clicked() {
+                        state.export_in = Some(std::time::Duration::from_secs_f64(
+                            state.timeline_playhead_secs,
+                        ));
+                    }
+                    ui.separator();
+                    ui.label(format!("OUT: {}", fmt_tc(state.export_out)));
+                    if ui.small_button("Set").clicked() {
+                        state.export_out = Some(std::time::Duration::from_secs_f64(
+                            state.timeline_playhead_secs,
+                        ));
+                    }
+                });
+            }
 
             ui.separator();
 
@@ -673,8 +735,6 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             if ui.button("⏹ Stop").clicked() {
                 state.stop_timeline_player();
                 state.timeline_playhead_secs = 0.0;
-                state.timeline_loop_in = None;
-                state.timeline_loop_out = None;
                 state.timeline_loop_enabled = false;
             }
             ui.separator();
@@ -1041,8 +1101,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 }
             }
 
-            // Loop region: shaded band + I/O marker lines
-            if let (Some(li), Some(lo)) = (state.timeline_loop_in, state.timeline_loop_out)
+            // I/O markers: shaded band + marker lines (shared by loop and export range)
+            if let (Some(li), Some(lo)) = (state.export_in, state.export_out)
                 && li < lo
             {
                 let x1 = (timeline_left + li.as_secs_f32() * pps).max(timeline_left);
@@ -1055,7 +1115,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     );
                 }
             }
-            if let Some(li) = state.timeline_loop_in {
+            if let Some(li) = state.export_in {
                 let x = timeline_left + li.as_secs_f32() * pps;
                 if x >= timeline_left && x <= ruler_rect.right() {
                     painter.vline(
@@ -1072,7 +1132,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     );
                 }
             }
-            if let Some(lo) = state.timeline_loop_out {
+            if let Some(lo) = state.export_out {
                 let x = timeline_left + lo.as_secs_f32() * pps;
                 if x >= timeline_left && x <= ruler_rect.right() {
                     painter.vline(
@@ -2877,12 +2937,12 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
     }
 
     if do_loop_in {
-        state.timeline_loop_in = Some(std::time::Duration::from_secs_f64(
+        state.export_in = Some(std::time::Duration::from_secs_f64(
             state.timeline_playhead_secs,
         ));
     }
     if do_loop_out {
-        state.timeline_loop_out = Some(std::time::Duration::from_secs_f64(
+        state.export_out = Some(std::time::Duration::from_secs_f64(
             state.timeline_playhead_secs,
         ));
     }

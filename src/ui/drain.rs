@@ -181,8 +181,8 @@ fn drain_frame(state: &mut AppState, ctx: &egui::Context) {
             // out-point, seek back to the in-point.
             if state.timeline_loop_enabled
                 && !state.timeline_is_paused
-                && let Some(loop_out) = state.timeline_loop_out
-                && let Some(loop_in) = state.timeline_loop_in
+                && let Some(loop_out) = state.export_out
+                && let Some(loop_in) = state.export_in
                 && loop_in < loop_out
                 && frame.pts >= loop_out
                 && let Some(handle) = &state.timeline_player_handle
