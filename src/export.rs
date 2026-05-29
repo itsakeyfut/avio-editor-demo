@@ -1,9 +1,7 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-
-use crate::state::{ExportHandle, ExportStatus};
 
 /// Send-safe snapshot of a single clip on any track.
 pub struct ExportClip {
@@ -57,27 +55,66 @@ pub struct ExportSnapshot {
     pub export_out: Option<Duration>,
 }
 
-/// Spawns a background task that builds an `avio::Timeline` from the snapshot
-/// and calls `Timeline::render_with_progress()`. Returns an `ExportHandle`
-/// whose `status` and `progress` fields can be polled from the render loop.
-pub fn spawn_export(snapshot: ExportSnapshot, output_path: PathBuf) -> ExportHandle {
-    let status = Arc::new(Mutex::new(ExportStatus::Running));
-    let progress = Arc::new(AtomicU32::new(0));
-    let status_clone = Arc::clone(&status);
-    let progress_clone = Arc::clone(&progress);
-    let output_clone = output_path.clone();
+/// A single entry in the export queue.
+///
+/// The snapshot is stored as `Option` and consumed (via `.take()`) when
+/// rendering begins so it cannot be accidentally re-used.
+pub struct QueueJob {
+    pub output_path: PathBuf,
+    /// Snapshot captured at "Add to Queue" time. `None` after rendering starts.
+    pub snapshot: Option<ExportSnapshot>,
+    pub status: Arc<Mutex<crate::state::QueueJobStatus>>,
+    pub progress: Arc<AtomicU32>,
+    pub cancel: Arc<AtomicBool>,
+}
+
+impl QueueJob {
+    pub fn new(snapshot: ExportSnapshot, output_path: PathBuf) -> Self {
+        Self {
+            output_path,
+            snapshot: Some(snapshot),
+            status: Arc::new(Mutex::new(crate::state::QueueJobStatus::Pending)),
+            progress: Arc::new(AtomicU32::new(0)),
+            cancel: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+/// Starts rendering `job` in the background.
+///
+/// Takes the snapshot from `job.snapshot`, sets status to `Running`, and
+/// spawns a `tokio::task::spawn_blocking` call. Returns `false` if the job is
+/// not `Pending` or the snapshot was already consumed.
+pub fn spawn_queue_job(job: &mut QueueJob) -> bool {
+    let snapshot = match job.snapshot.take() {
+        Some(s) => s,
+        None => return false,
+    };
+    {
+        let mut s = job.status.lock().unwrap_or_else(|e| e.into_inner());
+        if *s != crate::state::QueueJobStatus::Pending {
+            return false;
+        }
+        *s = crate::state::QueueJobStatus::Running;
+    }
+    let status = Arc::clone(&job.status);
+    let progress = Arc::clone(&job.progress);
+    let cancel = Arc::clone(&job.cancel);
+    let output = job.output_path.clone();
 
     tokio::task::spawn_blocking(move || {
-        let result = build_and_render(snapshot, &output_clone, &progress_clone);
-        if let Ok(mut guard) = status_clone.lock() {
-            *guard = match result {
-                Ok(()) => ExportStatus::Done(output_clone),
-                Err(e) => ExportStatus::Failed(e),
-            };
-        }
+        let result = build_and_render(snapshot, &output, &progress, &cancel);
+        let mut guard = status.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = match result {
+            Ok(()) => crate::state::QueueJobStatus::Done(output),
+            Err(ref e) if e == "cancelled" => {
+                let _ = std::fs::remove_file(&output);
+                crate::state::QueueJobStatus::Cancelled
+            }
+            Err(e) => crate::state::QueueJobStatus::Failed(e),
+        };
     });
-
-    ExportHandle { status, progress }
+    true
 }
 
 fn clips_to_avio(clips: Vec<ExportClip>) -> Vec<avio::Clip> {
@@ -241,6 +278,7 @@ fn build_and_render(
     mut snapshot: ExportSnapshot,
     output: &std::path::Path,
     progress: &Arc<AtomicU32>,
+    cancel: &Arc<AtomicBool>,
 ) -> Result<(), String> {
     // Apply export range filter. Mutates the snapshot so all downstream logic
     // (total_frames_estimate, timeline_dur_secs, lavfi overlay) uses trimmed clips.
@@ -373,18 +411,20 @@ fn build_and_render(
     let timeline = builder.build().map_err(|e| e.to_string())?;
 
     let progress_ref = Arc::clone(progress);
-    timeline
-        .render_with_progress(output, config, move |p| {
-            let pct = p.percent().unwrap_or_else(|| {
-                total_frames_estimate
-                    .filter(|&total| total > 0)
-                    .map(|total| (p.frames_processed as f64 / total as f64 * 100.0).min(99.0))
-                    .unwrap_or(0.0)
-            });
-            progress_ref.store((pct as f32).to_bits(), Ordering::Relaxed);
-            true
-        })
-        .map_err(|e| e.to_string())?;
-
-    Ok(())
+    let cancel_ref = Arc::clone(cancel);
+    let render_result = timeline.render_with_progress(output, config, move |p| {
+        let pct = p.percent().unwrap_or_else(|| {
+            total_frames_estimate
+                .filter(|&total| total > 0)
+                .map(|total| (p.frames_processed as f64 / total as f64 * 100.0).min(99.0))
+                .unwrap_or(0.0)
+        });
+        progress_ref.store((pct as f32).to_bits(), Ordering::Relaxed);
+        !cancel_ref.load(Ordering::Relaxed)
+    });
+    match render_result {
+        Ok(()) => Ok(()),
+        Err(_) if cancel.load(Ordering::Relaxed) => Err("cancelled".to_string()),
+        Err(e) => Err(e.to_string()),
+    }
 }

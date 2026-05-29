@@ -176,18 +176,34 @@ fn snap_clip_start(
 pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
 
-    // Header: "Timeline" heading + ⚙ settings button + Export button (right-aligned)
-    let mut clear_export = false;
+    // Header: "Timeline" heading + ⚙ settings button + queue buttons (right-aligned)
     ui.horizontal(|ui| {
         ui.heading("Timeline");
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let v1_empty = state.timeline.tracks[0].clips.is_empty();
-            let is_running = state
-                .export
-                .as_ref()
-                .is_some_and(|h| matches!(*h.status.lock().unwrap(), state::ExportStatus::Running));
+            let any_running = state.export_queue.iter().any(|j| {
+                matches!(
+                    *j.status.lock().unwrap_or_else(|e| e.into_inner()),
+                    state::QueueJobStatus::Running
+                )
+            });
+            let has_pending = state.export_queue.iter().any(|j| {
+                matches!(
+                    *j.status.lock().unwrap_or_else(|e| e.into_inner()),
+                    state::QueueJobStatus::Pending
+                )
+            });
             if ui
-                .add_enabled(!v1_empty && !is_running, egui::Button::new("Export"))
+                .add_enabled(
+                    !state.export_queue.is_empty() && !any_running && has_pending,
+                    egui::Button::new("Render All"),
+                )
+                .clicked()
+            {
+                state.queue_rendering = true;
+            }
+            if ui
+                .add_enabled(!v1_empty, egui::Button::new("Add to Queue"))
                 .clicked()
                 && let Some(output_path) = rfd::FileDialog::new()
                     .add_filter("MP4", &["mp4"])
@@ -251,7 +267,9 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         None
                     },
                 };
-                state.export = Some(export::spawn_export(snapshot, output_path));
+                state
+                    .export_queue
+                    .push(export::QueueJob::new(snapshot, output_path));
             }
             ui.toggle_value(&mut state.show_export_settings, "⚙")
                 .on_hover_text("Export settings");
@@ -482,70 +500,104 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         .suffix(" LUFS"),
                 );
             });
+
+            // ── Queue list ─────────────────────────────────────────────────────
+            ui.separator();
+            ui.label("Queue");
+            let mut remove_idx: Option<usize> = None;
+            for (i, job) in state.export_queue.iter().enumerate() {
+                let status = job
+                    .status
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                let filename = job
+                    .output_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(&filename)
+                            .text_style(egui::TextStyle::Monospace),
+                    );
+                    match &status {
+                        state::QueueJobStatus::Pending => {
+                            ui.weak("Pending");
+                            if ui.small_button("Remove").clicked() {
+                                remove_idx = Some(i);
+                            }
+                        }
+                        state::QueueJobStatus::Running => {
+                            let pct = f32::from_bits(
+                                job.progress
+                                    .load(std::sync::atomic::Ordering::Relaxed),
+                            );
+                            let fraction = (pct / 100.0).clamp(0.0, 1.0);
+                            let bar_text = if pct > 0.0 {
+                                format!("{:.0}%", pct)
+                            } else {
+                                "Encoding…".to_string()
+                            };
+                            ui.add(
+                                egui::ProgressBar::new(fraction)
+                                    .desired_width(120.0)
+                                    .text(bar_text),
+                            );
+                            if ui.small_button("Cancel").clicked() {
+                                job.cancel
+                                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
+                        }
+                        state::QueueJobStatus::Done(_) => {
+                            ui.colored_label(egui::Color32::GREEN, "Done");
+                            if ui.small_button("✕").clicked() {
+                                remove_idx = Some(i);
+                            }
+                        }
+                        state::QueueJobStatus::Failed(msg) => {
+                            ui.colored_label(egui::Color32::RED, "Failed")
+                                .on_hover_text(msg.as_str());
+                            if ui.small_button("✕").clicked() {
+                                remove_idx = Some(i);
+                            }
+                        }
+                        state::QueueJobStatus::Cancelled => {
+                            ui.weak("Cancelled");
+                            if ui.small_button("✕").clicked() {
+                                remove_idx = Some(i);
+                            }
+                        }
+                    }
+                });
+            }
+            if let Some(i) = remove_idx {
+                state.export_queue.remove(i);
+            }
         });
 
-    // Export progress window (floating, centered) — shown while running.
-    // Done / Failed states remain as an inline status row below.
-    if let Some(handle) = &state.export {
-        let status = handle
-            .status
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        if matches!(status, state::ExportStatus::Running) {
-            let pct = f32::from_bits(handle.progress.load(std::sync::atomic::Ordering::Relaxed));
-            egui::Window::new("Exporting…")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-                .show(&ctx, |ui| {
-                    ui.set_min_width(300.0);
-                    let fraction = (pct / 100.0).clamp(0.0, 1.0);
-                    let bar = egui::ProgressBar::new(fraction).desired_width(300.0);
-                    let bar = if pct > 0.0 {
-                        bar.text(format!("{:.0}%", pct))
-                    } else {
-                        bar.text("Encoding…")
-                    };
-                    ui.add(bar);
-                });
-            // Keep the UI updating while the background task runs.
-            ctx.request_repaint_after(std::time::Duration::from_millis(200));
-        }
-    }
-
-    // Export completion / failure row
-    if let Some(handle) = &state.export {
-        let status = handle
-            .status
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        match status {
-            state::ExportStatus::Done(path) => {
-                ui.horizontal(|ui| {
-                    ui.colored_label(
-                        egui::Color32::GREEN,
-                        format!("Exported: {}", path.display()),
-                    );
-                    if ui.button("✕").clicked() {
-                        clear_export = true;
-                    }
-                });
+    // ── Export queue advancement ──────────────────────────────────────────────
+    // Each frame: when no job is running, start the next Pending one.
+    if state.queue_rendering {
+        let any_running = state.export_queue.iter().any(|j| {
+            matches!(
+                *j.status.lock().unwrap_or_else(|e| e.into_inner()),
+                state::QueueJobStatus::Running
+            )
+        });
+        if !any_running {
+            if let Some(job) = state.export_queue.iter_mut().find(|j| {
+                matches!(
+                    *j.status.lock().unwrap_or_else(|e| e.into_inner()),
+                    state::QueueJobStatus::Pending
+                )
+            }) {
+                export::spawn_queue_job(job);
+            } else {
+                state.queue_rendering = false;
             }
-            state::ExportStatus::Failed(msg) => {
-                ui.horizontal(|ui| {
-                    ui.colored_label(egui::Color32::RED, format!("Export failed: {msg}"));
-                    if ui.button("✕").clicked() {
-                        clear_export = true;
-                    }
-                });
-            }
-            state::ExportStatus::Running => {}
         }
-    }
-    if clear_export {
-        state.export = None;
+        ctx.request_repaint_after(std::time::Duration::from_millis(200));
     }
 
     // ── Timeline playback controls ────────────────────────────────────────────
