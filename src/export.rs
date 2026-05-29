@@ -33,6 +33,9 @@ pub struct ExportClip {
     pub opacity: f32,
     /// Per-clip blend mode. Forwarded to `Clip::with_blend_mode`.
     pub blend_mode: avio::BlendMode,
+    /// Optional proxy file to decode from. When `Some`, forwarded to `Clip::proxy`
+    /// so avio renders from the proxy and scales up to the original resolution.
+    pub proxy_path: Option<PathBuf>,
 }
 
 /// Send-safe snapshot of all timeline tracks, constructed on the main thread
@@ -122,6 +125,10 @@ fn clips_to_avio(clips: Vec<ExportClip>) -> Vec<avio::Clip> {
         .into_iter()
         .map(|c| {
             let clip = avio::Clip::new(&c.path).offset(c.start_on_track);
+            let clip = match &c.proxy_path {
+                Some(p) => clip.proxy(p),
+                None => clip,
+            };
             let clip = match (c.in_point, c.out_point) {
                 (Some(in_pt), Some(out_pt)) => clip.trim(in_pt, out_pt),
                 _ => clip,

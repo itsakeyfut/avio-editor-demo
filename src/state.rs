@@ -150,6 +150,9 @@ pub struct AppState {
     pub export_out: Option<std::time::Duration>,
     /// When true, only the [export_in, export_out) range is rendered on export.
     pub export_range_enabled: bool,
+    /// When true, export decodes from each clip's proxy (when available) and
+    /// scales up to the original resolution — faster test renders via `Clip::proxy`.
+    pub export_use_proxies: bool,
     /// Index into `TimelineState::title_clips` of the currently selected title clip.
     pub selected_title_clip: Option<usize>,
     /// Active tab in the clip browser left panel.
@@ -235,6 +238,7 @@ impl Default for AppState {
             export_in: None,
             export_out: None,
             export_range_enabled: false,
+            export_use_proxies: false,
             selected_title_clip: None,
             browser_tab: BrowserTab::Media,
             text_presets: Vec::new(),
