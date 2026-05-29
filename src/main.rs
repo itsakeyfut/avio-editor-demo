@@ -3,6 +3,7 @@ mod export;
 mod gif;
 mod player;
 mod presets;
+mod project;
 mod proxy;
 mod sprite;
 mod state;
@@ -202,6 +203,7 @@ fn main() -> eframe::Result<()> {
 #[derive(Default)]
 struct AvioEditorApp {
     state: state::AppState,
+    project_warnings: Vec<String>,
 }
 
 impl eframe::App for AvioEditorApp {
@@ -216,10 +218,78 @@ impl eframe::App for AvioEditorApp {
         // Arrow key frame stepping (while paused).
         handle_frame_step(&self.state, ctx);
 
+        // Project keyboard shortcuts (Ctrl+S = save, Ctrl+O = open).
+        if !ctx.wants_keyboard_input() {
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::S))
+                && let Some(path) = rfd::FileDialog::new()
+                    .add_filter("Avio Project", &["avioedit"])
+                    .set_file_name("project.avioedit")
+                    .save_file()
+            {
+                if let Err(e) = project::save_project(&self.state, &path) {
+                    self.project_warnings = vec![format!("Save failed: {e}")];
+                } else {
+                    self.project_warnings.clear();
+                }
+            }
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::O))
+                && let Some(path) = rfd::FileDialog::new()
+                    .add_filter("Avio Project", &["avioedit"])
+                    .pick_file()
+            {
+                match project::load_project(&mut self.state, &path) {
+                    Ok(w) => self.project_warnings = w,
+                    Err(e) => self.project_warnings = vec![format!("Load failed: {e}")],
+                }
+            }
+        }
+
         // 1. Top menu bar (must come before all other panels)
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
-                ui.menu_button("File", |_ui| {});
+                ui.menu_button("File", |ui| {
+                    if ui.button("New Project").clicked() {
+                        if rfd::MessageDialog::new()
+                            .set_title("New Project")
+                            .set_description("Discard the current project and start fresh?")
+                            .set_buttons(rfd::MessageButtons::OkCancel)
+                            .show()
+                            == rfd::MessageDialogResult::Ok
+                        {
+                            self.state = state::AppState::default();
+                            self.project_warnings.clear();
+                        }
+                        ui.close();
+                    }
+                    if ui.button("Open Project…").on_hover_text("Ctrl+O").clicked() {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("Avio Project", &["avioedit"])
+                            .pick_file()
+                        {
+                            match project::load_project(&mut self.state, &path) {
+                                Ok(w) => self.project_warnings = w,
+                                Err(e) => {
+                                    self.project_warnings = vec![format!("Load failed: {e}")];
+                                }
+                            }
+                        }
+                        ui.close();
+                    }
+                    if ui.button("Save Project…").on_hover_text("Ctrl+S").clicked() {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("Avio Project", &["avioedit"])
+                            .set_file_name("project.avioedit")
+                            .save_file()
+                        {
+                            if let Err(e) = project::save_project(&self.state, &path) {
+                                self.project_warnings = vec![format!("Save failed: {e}")];
+                            } else {
+                                self.project_warnings.clear();
+                            }
+                        }
+                        ui.close();
+                    }
+                });
                 ui.menu_button("Edit", |ui| {
                     let can_undo = !self.state.undo_stack.is_empty();
                     let can_redo = !self.state.redo_stack.is_empty();
@@ -275,6 +345,21 @@ impl eframe::App for AvioEditorApp {
                 });
             });
         });
+
+        // Project load warnings banner (shown when one or more source files were missing).
+        if !self.project_warnings.is_empty() {
+            egui::TopBottomPanel::top("project_warnings").show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.colored_label(egui::Color32::YELLOW, "⚠");
+                    for w in &self.project_warnings {
+                        ui.label(w);
+                    }
+                    if ui.small_button("✕").clicked() {
+                        self.project_warnings.clear();
+                    }
+                });
+            });
+        }
 
         // 2. Bottom: Timeline (must come before SidePanel and CentralPanel)
         egui::TopBottomPanel::bottom("timeline")
