@@ -3,6 +3,56 @@ use std::time::Duration;
 
 use crate::{analysis, gif, player, proxy, sprite, state, thumbnail, trim};
 
+/// Spawns the background analysis jobs (thumbnail, scene detection, sprite sheet,
+/// silence detection, waveform) for the clip at `clip_idx`. Used both when a clip
+/// is imported and when a project is loaded (so previews are regenerated).
+///
+/// The jobs send their results through the channels on `state`; the render loop's
+/// `drain_background_jobs` applies them by `clip_idx` (scenes/silence/waveform/sprite)
+/// or by `path` (thumbnail).
+pub fn spawn_clip_analysis(state: &state::AppState, clip_idx: usize) {
+    let Some(clip) = state.clips.get(clip_idx) else {
+        return;
+    };
+    let path = clip.path.clone();
+    let has_video = clip.info.primary_video().is_some();
+
+    if has_video {
+        let tx = state.thumbnail_tx.clone();
+        let path_for_task = path.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Some((w, h, rgb)) = thumbnail::select_best_thumbnail(&path_for_task) {
+                let _ = tx.send((path_for_task, w, h, rgb));
+            }
+        });
+        let scene_tx = state.scene_tx.clone();
+        let path_for_scene = path.clone();
+        tokio::task::spawn_blocking(move || {
+            let scenes = analysis::detect_scenes(&path_for_scene);
+            let _ = scene_tx.send((clip_idx, scenes));
+        });
+        let sprite_tx = state.sprite_tx.clone();
+        let path_for_sprite = path.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Some((w, h, rgba)) = sprite::generate_sprite_sheet(&path_for_sprite, 10, 5) {
+                let _ = sprite_tx.send((clip_idx, w, h, rgba));
+            }
+        });
+    }
+    let silence_tx = state.silence_tx.clone();
+    let path_for_silence = path.clone();
+    tokio::task::spawn_blocking(move || {
+        let regions = analysis::detect_silence(&path_for_silence);
+        let _ = silence_tx.send((clip_idx, regions));
+    });
+    let waveform_tx = state.waveform_tx.clone();
+    let path_for_waveform = path.clone();
+    tokio::task::spawn_blocking(move || {
+        let waveform = analysis::extract_waveform(&path_for_waveform, 512);
+        let _ = waveform_tx.send((clip_idx, waveform));
+    });
+}
+
 fn show_text_tab(state: &mut state::AppState, ui: &mut egui::Ui) {
     // ── "+" button to create a new preset ────────────────────────────────────
     ui.horizontal(|ui| {
@@ -249,7 +299,6 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
         for path in paths {
             match avio::open(&path) {
                 Ok(info) => {
-                    let has_video = info.primary_video().is_some();
                     state.clips.push(state::ImportedClip {
                         path: path.clone(),
                         info,
@@ -263,44 +312,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
                         out_point: None,
                     });
                     let clip_idx = state.clips.len() - 1;
-                    if has_video {
-                        let tx = state.thumbnail_tx.clone();
-                        let path_for_task = path.clone();
-                        tokio::task::spawn_blocking(move || {
-                            if let Some((w, h, rgb)) =
-                                thumbnail::select_best_thumbnail(&path_for_task)
-                            {
-                                let _ = tx.send((path_for_task, w, h, rgb));
-                            }
-                        });
-                        let scene_tx = state.scene_tx.clone();
-                        let path_for_scene = path.clone();
-                        tokio::task::spawn_blocking(move || {
-                            let scenes = analysis::detect_scenes(&path_for_scene);
-                            let _ = scene_tx.send((clip_idx, scenes));
-                        });
-                        let sprite_tx = state.sprite_tx.clone();
-                        let path_for_sprite = path.clone();
-                        tokio::task::spawn_blocking(move || {
-                            if let Some((w, h, rgba)) =
-                                sprite::generate_sprite_sheet(&path_for_sprite, 10, 5)
-                            {
-                                let _ = sprite_tx.send((clip_idx, w, h, rgba));
-                            }
-                        });
-                    }
-                    let silence_tx = state.silence_tx.clone();
-                    let path_for_silence = path.clone();
-                    tokio::task::spawn_blocking(move || {
-                        let regions = analysis::detect_silence(&path_for_silence);
-                        let _ = silence_tx.send((clip_idx, regions));
-                    });
-                    let waveform_tx = state.waveform_tx.clone();
-                    let path_for_waveform = path.clone();
-                    tokio::task::spawn_blocking(move || {
-                        let waveform = analysis::extract_waveform(&path_for_waveform, 512);
-                        let _ = waveform_tx.send((clip_idx, waveform));
-                    });
+                    spawn_clip_analysis(state, clip_idx);
                 }
                 Err(e) => log::warn!("probe failed for {path:?}: {e}"),
             }
