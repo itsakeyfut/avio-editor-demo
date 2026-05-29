@@ -51,6 +51,10 @@ pub struct ExportSnapshot {
     pub loudness_target: f64,
     /// Title clips from the T1 track — converted to a lavfi drawtext overlay.
     pub title_clips: Vec<crate::state::TitleClip>,
+    /// Export in-point. `Some` only when export range mode is active.
+    pub export_in: Option<Duration>,
+    /// Export out-point. `Some` only when export range mode is active.
+    pub export_out: Option<Duration>,
 }
 
 /// Spawns a background task that builds an `avio::Timeline` from the snapshot
@@ -131,6 +135,55 @@ fn clips_to_avio(clips: Vec<ExportClip>) -> Vec<avio::Clip> {
         .collect()
 }
 
+/// Filters and trims a track's clips to `[range_in, range_out)`.
+///
+/// Clips entirely outside the range are dropped. Clips that overlap are trimmed and their
+/// `start_on_track` values are shifted by `-range_in` so the output starts at t = 0.
+fn clip_range_filter(
+    clips: Vec<ExportClip>,
+    range_in: Duration,
+    range_out: Duration,
+) -> Vec<ExportClip> {
+    clips
+        .into_iter()
+        .filter_map(|mut c| {
+            let eff_in = c.in_point.unwrap_or(Duration::ZERO);
+            let eff_out = c.out_point.unwrap_or(c.source_duration);
+            let src_dur = eff_out.saturating_sub(eff_in);
+            let tl_dur = Duration::from_secs_f64(src_dur.as_secs_f64() / c.speed as f64);
+            let tl_end = c.start_on_track + tl_dur;
+
+            if tl_end <= range_in || c.start_on_track >= range_out {
+                return None;
+            }
+            // Trim start: skip source material that falls before the range.
+            if c.start_on_track < range_in {
+                let skip_src = Duration::from_secs_f64(
+                    (range_in - c.start_on_track).as_secs_f64() * c.speed as f64,
+                );
+                c.in_point = Some(eff_in + skip_src);
+                c.start_on_track = Duration::ZERO;
+            } else {
+                c.start_on_track -= range_in;
+            }
+            // Trim end: drop source material that falls past the range.
+            if tl_end > range_out {
+                let trim_src =
+                    Duration::from_secs_f64((tl_end - range_out).as_secs_f64() * c.speed as f64);
+                let new_out = eff_out.saturating_sub(trim_src);
+                c.out_point = Some(new_out.max(c.in_point.unwrap_or(Duration::ZERO)));
+            }
+            // clips_to_avio only calls .trim() when BOTH in_point and out_point are Some.
+            // If out_point was set above but in_point is still None, explicitly set it so
+            // the (Some, Some) branch is used and the end-trim actually takes effect.
+            if c.out_point.is_some() && c.in_point.is_none() {
+                c.in_point = Some(eff_in);
+            }
+            Some(c)
+        })
+        .collect()
+}
+
 /// Builds an FFmpeg `lavfi` filtergraph string from T1 title clips.
 ///
 /// Returns `None` when there are no non-empty title clips.  The string is
@@ -185,10 +238,38 @@ fn build_lavfi_overlay_filter(
 }
 
 fn build_and_render(
-    snapshot: ExportSnapshot,
+    mut snapshot: ExportSnapshot,
     output: &std::path::Path,
     progress: &Arc<AtomicU32>,
 ) -> Result<(), String> {
+    // Apply export range filter. Mutates the snapshot so all downstream logic
+    // (total_frames_estimate, timeline_dur_secs, lavfi overlay) uses trimmed clips.
+    if let (Some(range_in), Some(range_out)) = (snapshot.export_in, snapshot.export_out)
+        && range_in < range_out
+    {
+        snapshot.video_clips = std::mem::take(&mut snapshot.video_clips)
+            .into_iter()
+            .map(|track| clip_range_filter(track, range_in, range_out))
+            .collect();
+        let a1 = std::mem::take(&mut snapshot.a1_clips);
+        snapshot.a1_clips = clip_range_filter(a1, range_in, range_out);
+        snapshot.title_clips = std::mem::take(&mut snapshot.title_clips)
+            .into_iter()
+            .filter(|tc| {
+                tc.start_on_track < range_out && tc.start_on_track + tc.duration > range_in
+            })
+            .map(|mut tc| {
+                let tc_end = tc.start_on_track + tc.duration;
+                tc.start_on_track = tc.start_on_track.saturating_sub(range_in);
+                let new_end = tc_end.min(range_out).saturating_sub(range_in);
+                tc.duration = new_end
+                    .saturating_sub(tc.start_on_track)
+                    .max(Duration::from_millis(1));
+                tc
+            })
+            .collect();
+    }
+
     // Compute the estimate before snapshot fields are moved into clips_to_avio.
     // Used as a fallback when avio cannot determine total_frames (clips without out_point).
     let total_frames_estimate: Option<u64> = {

@@ -141,9 +141,14 @@ pub struct AppState {
     /// Current J-key reverse rate. 0.0 = not reversing; positive = 1/2/4/8×.
     pub jkl_reverse_rate: f64,
     // ── Timeline loop region ─────────────────────────────────────────────────
-    pub timeline_loop_in: Option<std::time::Duration>,
-    pub timeline_loop_out: Option<std::time::Duration>,
     pub timeline_loop_enabled: bool,
+    // ── I/O markers (shared by loop playback and export range) ───────────────
+    /// Timeline in-point. Set by I key. Used for both loop playback and Export Range.
+    pub export_in: Option<std::time::Duration>,
+    /// Timeline out-point. Set by O key. Used for both loop playback and Export Range.
+    pub export_out: Option<std::time::Duration>,
+    /// When true, only the [export_in, export_out) range is rendered on export.
+    pub export_range_enabled: bool,
     /// Index into `TimelineState::title_clips` of the currently selected title clip.
     pub selected_title_clip: Option<usize>,
     /// Active tab in the clip browser left panel.
@@ -224,9 +229,10 @@ impl Default for AppState {
             timeline_clipboard: None,
             jkl_forward_rate: 0.0,
             jkl_reverse_rate: 0.0,
-            timeline_loop_in: None,
-            timeline_loop_out: None,
             timeline_loop_enabled: false,
+            export_in: None,
+            export_out: None,
+            export_range_enabled: false,
             selected_title_clip: None,
             browser_tab: BrowserTab::Media,
             text_presets: Vec::new(),
