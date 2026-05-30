@@ -1465,7 +1465,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     let is_tl_drag_hover = active_drag.is_some()
                         && ui.input(|i| {
                             i.pointer.latest_pos().is_some_and(|ptr| {
-                                let y_off = ptr.y - ruler_rect.bottom();
+                                let y_off = ptr.y - t1_lane_rect.bottom();
                                 ((y_off / TRACK_HEIGHT).floor() as isize) == track_idx as isize
                             })
                         });
@@ -2103,7 +2103,10 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                         && drag.src_clip == clip_i
                                     {
                                         if let Some(ptr) = ui.input(|i| i.pointer.latest_pos()) {
-                                            let y_off = ptr.y - ruler_rect.bottom();
+                                            // Track lanes start below the T1 title lane, not at
+                                            // the ruler — offset by the T1 lane so the drop maps
+                                            // to the correct track.
+                                            let y_off = ptr.y - t1_lane_rect.bottom();
                                             let dst_track = ((y_off / TRACK_HEIGHT).floor()
                                                 as isize)
                                                 .clamp(0, tracks_count as isize - 1)
@@ -2327,7 +2330,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         })
                         .unwrap_or(1.0);
 
-                    let tracks_top = ruler_rect.bottom();
+                    // Track lanes start below the T1 title lane (see drop handler).
+                    let tracks_top = t1_lane_rect.bottom();
                     let y_off = ptr.y - tracks_top;
                     let dst_ti = ((y_off / TRACK_HEIGHT).floor() as isize)
                         .clamp(0, tracks_count as isize - 1)
@@ -2434,8 +2438,9 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
 
             // ── Playhead ────────────────────────────────────────────────────────
             let playhead_x = timeline_left + state.timeline_playhead_secs as f32 * pps;
+            // Span the ruler, the T1 title lane, and every track lane below it.
             let tracks_bottom =
-                ruler_rect.bottom() + TRACK_HEIGHT * state.timeline.tracks.len() as f32;
+                t1_lane_rect.bottom() + TRACK_HEIGHT * state.timeline.tracks.len() as f32;
             let playhead_color = egui::Color32::from_rgb(220, 60, 60);
             ui.painter().vline(
                 playhead_x,
