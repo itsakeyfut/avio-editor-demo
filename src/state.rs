@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, mpsc};
@@ -161,6 +162,9 @@ pub struct AppState {
     pub text_presets: Vec<TextClipPreset>,
     /// Index into `text_presets` of the currently selected preset in the browser.
     pub selected_text_preset: Option<usize>,
+    /// Parsed-LUT cache for the software preview, keyed by `.cube` path.
+    /// `None` = parse failed (cached so it is not retried every frame).
+    pub lut_cache: HashMap<PathBuf, Option<crate::lut::Lut3d>>,
 }
 
 impl Default for AppState {
@@ -243,6 +247,7 @@ impl Default for AppState {
             browser_tab: BrowserTab::Media,
             text_presets: Vec::new(),
             selected_text_preset: None,
+            lut_cache: HashMap::new(),
         }
     }
 }
@@ -525,6 +530,10 @@ pub struct TimelineClip {
     /// overlay tracks — `FilterGraphBuilder::blend()` is not wired into the `Clip` pipeline
     /// (docs/issue43.md).
     pub blend_mode: avio::BlendMode,
+    /// Per-clip 3D LUT (.cube) file path. `None` = no LUT.
+    /// Applied on export via `avio::Clip::with_video_effect(FilterStep::Lut3d)`.
+    /// Export-only: not shown in the monitor preview (v1).
+    pub lut_path: Option<PathBuf>,
 }
 
 pub struct TimelineState {

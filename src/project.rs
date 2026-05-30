@@ -51,6 +51,8 @@ pub struct ProjectTimelineClip {
     pub speed: f32,
     pub opacity: f32,
     pub blend_mode: String,
+    #[serde(default)]
+    pub lut_path: Option<String>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -187,6 +189,10 @@ fn timeline_clip_to_project(tc: &TimelineClip, clips: &[ImportedClip]) -> Projec
         speed: tc.speed,
         opacity: tc.opacity,
         blend_mode: blend_mode_to_str(tc.blend_mode).to_string(),
+        lut_path: tc
+            .lut_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().into_owned()),
     }
 }
 
@@ -218,6 +224,7 @@ fn project_to_timeline_clip(
         speed: ptc.speed,
         opacity: ptc.opacity,
         blend_mode: blend_mode_from_str(&ptc.blend_mode),
+        lut_path: ptc.lut_path.as_ref().map(PathBuf::from),
     })
 }
 

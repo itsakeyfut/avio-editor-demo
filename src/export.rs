@@ -36,6 +36,9 @@ pub struct ExportClip {
     /// Optional proxy file to decode from. When `Some`, forwarded to `Clip::proxy`
     /// so avio renders from the proxy and scales up to the original resolution.
     pub proxy_path: Option<PathBuf>,
+    /// Optional 3D LUT (.cube) path. When `Some`, attached via
+    /// `Clip::with_video_effect(FilterStep::Lut3d)`.
+    pub lut_path: Option<PathBuf>,
 }
 
 /// Send-safe snapshot of all timeline tracks, constructed on the main thread
@@ -163,6 +166,13 @@ fn clips_to_avio(clips: Vec<ExportClip>) -> Vec<avio::Clip> {
                 clip.with_color_correction(c.brightness, c.contrast, c.saturation)
             } else {
                 clip
+            };
+            // 3D LUT applied after colour correction (correct exposure, then look).
+            let clip = match &c.lut_path {
+                Some(p) => clip.with_video_effect(avio::FilterStep::Lut3d {
+                    path: p.to_string_lossy().into_owned(),
+                }),
+                None => clip,
             };
             #[allow(clippy::float_cmp)]
             let clip = if c.opacity != 1.0 {
