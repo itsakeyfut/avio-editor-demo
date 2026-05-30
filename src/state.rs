@@ -4,6 +4,10 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
+/// Neutral white-balance temperature (Kelvin). At this value (with tint 0) the
+/// white-balance filter is treated as "off" and skipped, so output is unchanged.
+pub const WB_NEUTRAL_TEMP: u32 = 6500;
+
 /// Which edge of a clip is being trimmed.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TrimEdge {
@@ -534,6 +538,11 @@ pub struct TimelineClip {
     /// Applied on export via `avio::Clip::with_video_effect(FilterStep::Lut3d)`.
     /// Export-only: not shown in the monitor preview (v1).
     pub lut_path: Option<PathBuf>,
+    /// White-balance colour temperature in Kelvin. Default 6500 (off).
+    /// Applied via `FilterStep::WhiteBalance` on export and in software preview.
+    pub wb_temperature: u32,
+    /// White-balance tint, added to the green channel multiplier. Default 0.0 (off).
+    pub wb_tint: f32,
 }
 
 pub struct TimelineState {

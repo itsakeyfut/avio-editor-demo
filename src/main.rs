@@ -1,4 +1,5 @@
 mod analysis;
+mod color;
 mod export;
 mod gif;
 mod lut;
