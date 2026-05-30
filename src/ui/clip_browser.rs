@@ -655,6 +655,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
                 opacity: 1.0,
                 blend_mode: avio::BlendMode::Normal,
                 lut_path: None,
+                wb_temperature: state::WB_NEUTRAL_TEMP,
+                wb_tint: 0.0,
             });
         }
         let can_trim = clip.in_point.is_some() && clip.out_point.is_some();

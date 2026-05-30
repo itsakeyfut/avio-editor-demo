@@ -210,6 +210,7 @@ fn drain_frame(state: &mut AppState, ctx: &egui::Context) {
                 })
             });
             let correction = active.map(|tc| (tc.brightness, tc.contrast, tc.saturation));
+            let white_balance = active.map(|tc| (tc.wb_temperature, tc.wb_tint));
             let lut_path = active.and_then(|tc| tc.lut_path.clone());
 
             let is_rgba = frame.data.len() == frame.width as usize * frame.height as usize * 4;
@@ -219,6 +220,14 @@ fn drain_frame(state: &mut AppState, ctx: &egui::Context) {
                 && (b != 0.0 || c != 1.0 || s != 1.0)
             {
                 apply_eq_rgba(&mut frame.data, b, c, s);
+            }
+            // White balance after exposure/contrast, before the LUT (export order).
+            #[allow(clippy::float_cmp)]
+            if is_rgba
+                && let Some((temp, tint)) = white_balance
+                && (temp != crate::state::WB_NEUTRAL_TEMP || tint != 0.0)
+            {
+                crate::color::apply_white_balance_rgba(&mut frame.data, temp, tint);
             }
             // LUT applied after colour correction (matches the export order).
             if is_rgba && let Some(path) = lut_path {

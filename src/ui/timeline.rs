@@ -238,6 +238,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                             None
                         },
                         lut_path: tc.lut_path.clone(),
+                        wb_temperature: tc.wb_temperature,
+                        wb_tint: tc.wb_tint,
                     }
                 };
                 let tracks = &state.timeline.tracks;
@@ -931,6 +933,29 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                             clip.brightness = 0.0;
                             clip.contrast = 1.0;
                             clip.saturation = 1.0;
+                        }
+                    });
+                    // White balance — temperature (Kelvin) + tint, via avio WhiteBalance.
+                    // Labels precede their sliders (matches the brightness row above).
+                    ui.horizontal(|ui| {
+                        ui.label("White Balance — Temp K");
+                        ui.add(egui::Slider::new(&mut clip.wb_temperature, 2000..=12000));
+                        ui.separator();
+                        ui.label("Tint");
+                        ui.add(
+                            egui::Slider::new(&mut clip.wb_tint, -0.5..=0.5).fixed_decimals(2),
+                        );
+                        ui.separator();
+                        #[allow(clippy::float_cmp)]
+                        let wb_off =
+                            clip.wb_temperature == state::WB_NEUTRAL_TEMP && clip.wb_tint == 0.0;
+                        if ui
+                            .add_enabled(!wb_off, egui::Button::new("Reset"))
+                            .on_hover_text("Reset white balance to neutral")
+                            .clicked()
+                        {
+                            clip.wb_temperature = state::WB_NEUTRAL_TEMP;
+                            clip.wb_tint = 0.0;
                         }
                     });
                     // 3D LUT (.cube) — export-only via avio Clip effect chain.
@@ -2855,6 +2880,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             opacity: 1.0,
             blend_mode: avio::BlendMode::Normal,
             lut_path: None,
+            wb_temperature: state::WB_NEUTRAL_TEMP,
+            wb_tint: 0.0,
         };
         // Sorted insert so that out-of-order drops don't corrupt array order.
         let track = &mut state.timeline.tracks[track_idx].clips;
@@ -2984,6 +3011,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 opacity: state.timeline.tracks[ti].clips[ci].opacity,
                 blend_mode: state.timeline.tracks[ti].clips[ci].blend_mode,
                 lut_path: state.timeline.tracks[ti].clips[ci].lut_path.clone(),
+                wb_temperature: state.timeline.tracks[ti].clips[ci].wb_temperature,
+                wb_tint: state.timeline.tracks[ti].clips[ci].wb_tint,
             };
             state.timeline.tracks[ti].clips.insert(ci + 1, right);
         }

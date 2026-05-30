@@ -39,6 +39,10 @@ pub struct ExportClip {
     /// Optional 3D LUT (.cube) path. When `Some`, attached via
     /// `Clip::with_video_effect(FilterStep::Lut3d)`.
     pub lut_path: Option<PathBuf>,
+    /// White-balance colour temperature (Kelvin). `WB_NEUTRAL_TEMP` + tint 0 = off.
+    pub wb_temperature: u32,
+    /// White-balance tint (added to the green multiplier).
+    pub wb_tint: f32,
 }
 
 /// Send-safe snapshot of all timeline tracks, constructed on the main thread
@@ -164,6 +168,16 @@ fn clips_to_avio(clips: Vec<ExportClip>) -> Vec<avio::Clip> {
             #[allow(clippy::float_cmp)]
             let clip = if c.brightness != 0.0 || c.contrast != 1.0 || c.saturation != 1.0 {
                 clip.with_color_correction(c.brightness, c.contrast, c.saturation)
+            } else {
+                clip
+            };
+            // White balance after exposure/contrast, before the LUT look.
+            #[allow(clippy::float_cmp)]
+            let clip = if c.wb_temperature != crate::state::WB_NEUTRAL_TEMP || c.wb_tint != 0.0 {
+                clip.with_video_effect(avio::FilterStep::WhiteBalance {
+                    temperature_k: c.wb_temperature,
+                    tint: c.wb_tint,
+                })
             } else {
                 clip
             };
