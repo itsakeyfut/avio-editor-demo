@@ -237,6 +237,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         } else {
                             None
                         },
+                        lut_path: tc.lut_path.clone(),
                     }
                 };
                 let tracks = &state.timeline.tracks;
@@ -932,7 +933,28 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                             clip.saturation = 1.0;
                         }
                     });
-                    ui.weak("Color correction applied on Export only (ff-preview limitation — docs/issue40.md). Speed applies to preview and export; audio pitch changes proportionally in preview (no pitch correction — docs/issue42.md). Opacity applies to preview (V1 fades to black; V2 fades over V1). Blend mode applies to export only (docs/issue43.md).");
+                    // 3D LUT (.cube) — export-only via avio Clip effect chain.
+                    ui.horizontal(|ui| {
+                        ui.label("LUT (.cube)");
+                        if ui.button("Load…").clicked()
+                            && let Some(path) = rfd::FileDialog::new()
+                                .add_filter("Cube LUT", &["cube"])
+                                .pick_file()
+                        {
+                            clip.lut_path = Some(path);
+                        }
+                        if clip.lut_path.is_some() && ui.button("Clear").clicked() {
+                            clip.lut_path = None;
+                        }
+                        if let Some(p) = &clip.lut_path {
+                            let name = p
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default();
+                            ui.weak(name);
+                        }
+                    });
+                    ui.weak("Color correction applied on Export only (ff-preview limitation — docs/issue40.md). Speed applies to preview and export; audio pitch changes proportionally in preview (no pitch correction — docs/issue42.md). Opacity applies to preview (V1 fades to black; V2 fades over V1). Blend mode applies to export only (docs/issue43.md). LUT applies to preview and export.");
                 });
         }
     }
@@ -2832,6 +2854,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             speed: 1.0,
             opacity: 1.0,
             blend_mode: avio::BlendMode::Normal,
+            lut_path: None,
         };
         // Sorted insert so that out-of-order drops don't corrupt array order.
         let track = &mut state.timeline.tracks[track_idx].clips;
@@ -2960,6 +2983,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 speed: state.timeline.tracks[ti].clips[ci].speed,
                 opacity: state.timeline.tracks[ti].clips[ci].opacity,
                 blend_mode: state.timeline.tracks[ti].clips[ci].blend_mode,
+                lut_path: state.timeline.tracks[ti].clips[ci].lut_path.clone(),
             };
             state.timeline.tracks[ti].clips.insert(ci + 1, right);
         }

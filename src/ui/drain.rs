@@ -193,27 +193,24 @@ fn drain_frame(state: &mut AppState, ctx: &egui::Context) {
 
             // Apply per-clip color correction for preview.
             // Find the active V1 clip at the current frame PTS and apply its
-            // brightness/contrast/saturation as a software RGBA transform.
+            // brightness/contrast/saturation (and LUT) as software RGBA transforms.
             let pts = frame.pts;
-            let correction = state
-                .timeline
-                .tracks
-                .first()
-                .and_then(|track| {
-                    track.clips.iter().find(|tc| {
-                        let start = tc.start_on_track;
-                        let eff_dur = match (tc.in_point, tc.out_point) {
-                            (Some(i), Some(o)) if o > i => o - i,
-                            _ => state
-                                .clips
-                                .get(tc.source_index)
-                                .map(|c| c.info.duration())
-                                .unwrap_or(std::time::Duration::ZERO),
-                        };
-                        pts >= start && pts < start + eff_dur
-                    })
+            let active = state.timeline.tracks.first().and_then(|track| {
+                track.clips.iter().find(|tc| {
+                    let start = tc.start_on_track;
+                    let eff_dur = match (tc.in_point, tc.out_point) {
+                        (Some(i), Some(o)) if o > i => o - i,
+                        _ => state
+                            .clips
+                            .get(tc.source_index)
+                            .map(|c| c.info.duration())
+                            .unwrap_or(std::time::Duration::ZERO),
+                    };
+                    pts >= start && pts < start + eff_dur
                 })
-                .map(|tc| (tc.brightness, tc.contrast, tc.saturation));
+            });
+            let correction = active.map(|tc| (tc.brightness, tc.contrast, tc.saturation));
+            let lut_path = active.and_then(|tc| tc.lut_path.clone());
 
             let is_rgba = frame.data.len() == frame.width as usize * frame.height as usize * 4;
             #[allow(clippy::float_cmp)]
@@ -222,6 +219,21 @@ fn drain_frame(state: &mut AppState, ctx: &egui::Context) {
                 && (b != 0.0 || c != 1.0 || s != 1.0)
             {
                 apply_eq_rgba(&mut frame.data, b, c, s);
+            }
+            // LUT applied after colour correction (matches the export order).
+            if is_rgba && let Some(path) = lut_path {
+                let lut = state.lut_cache.entry(path.clone()).or_insert_with(|| {
+                    match crate::lut::Lut3d::parse(&path) {
+                        Ok(l) => Some(l),
+                        Err(e) => {
+                            log::warn!("LUT preview parse failed for {}: {e}", path.display());
+                            None
+                        }
+                    }
+                });
+                if let Some(lut) = lut {
+                    lut.apply_rgba(&mut frame.data);
+                }
             }
         } else {
             state.current_pts = Some(frame.pts);
