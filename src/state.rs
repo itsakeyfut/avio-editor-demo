@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, mpsc};
@@ -7,6 +6,36 @@ use std::time::Duration;
 /// Neutral white-balance temperature (Kelvin). At this value (with tint 0) the
 /// white-balance filter is treated as "off" and skipped, so output is unchanged.
 pub const WB_NEUTRAL_TEMP: u32 = 6500;
+
+/// Signature of the inputs that determine the timeline preview's colour-grading
+/// renderer: the active clip's grade plus the frame size (the avio filter graph is
+/// configured from the first frame's dimensions). When this changes, the cached
+/// [`PreviewRendererCache`] must be rebuilt.
+#[derive(Clone, PartialEq)]
+pub struct PreviewColorSig {
+    pub brightness: f32,
+    pub contrast: f32,
+    pub saturation: f32,
+    pub wb_temperature: u32,
+    pub wb_tint: f32,
+    pub hue_degrees: f32,
+    pub gamma_r: f32,
+    pub gamma_g: f32,
+    pub gamma_b: f32,
+    pub lut_path: Option<PathBuf>,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Cached avio preview renderer that applies the active clip's grade to preview
+/// frames via the *same* effect chain and `yuv420p` working space as export — so
+/// the monitor matches the rendered output (up to codec/4:2:0). Built once per
+/// distinct [`PreviewColorSig`]; the renderer holds the filter graph (and any
+/// `lut3d` file it loaded) so it is not rebuilt per frame.
+pub struct PreviewRendererCache {
+    pub sig: PreviewColorSig,
+    pub renderer: avio::VideoEffectRenderer,
+}
 
 /// Which edge of a clip is being trimmed.
 #[derive(Clone, Debug, PartialEq)]
@@ -166,9 +195,10 @@ pub struct AppState {
     pub text_presets: Vec<TextClipPreset>,
     /// Index into `text_presets` of the currently selected preset in the browser.
     pub selected_text_preset: Option<usize>,
-    /// Parsed-LUT cache for the software preview, keyed by `.cube` path.
-    /// `None` = parse failed (cached so it is not retried every frame).
-    pub lut_cache: HashMap<PathBuf, Option<crate::lut::Lut3d>>,
+    /// Cached colour-grading renderer for the timeline preview, rebuilt only when
+    /// the active clip's grade or the frame size changes. `None` when the active
+    /// clip has no colour effects.
+    pub preview_renderer_cache: Option<PreviewRendererCache>,
 }
 
 impl Default for AppState {
@@ -251,7 +281,7 @@ impl Default for AppState {
             browser_tab: BrowserTab::Media,
             text_presets: Vec::new(),
             selected_text_preset: None,
-            lut_cache: HashMap::new(),
+            preview_renderer_cache: None,
         }
     }
 }
@@ -543,6 +573,14 @@ pub struct TimelineClip {
     pub wb_temperature: u32,
     /// White-balance tint, added to the green channel multiplier. Default 0.0 (off).
     pub wb_tint: f32,
+    /// Hue rotation in degrees. Default 0.0 (off). Applied via `FilterStep::Hue`.
+    pub hue_degrees: f32,
+    /// Per-channel gamma (red). Default 1.0 (off). Applied via `FilterStep::Gamma`.
+    pub gamma_r: f32,
+    /// Per-channel gamma (green). Default 1.0 (off).
+    pub gamma_g: f32,
+    /// Per-channel gamma (blue). Default 1.0 (off).
+    pub gamma_b: f32,
 }
 
 pub struct TimelineState {

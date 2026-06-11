@@ -1,8 +1,6 @@
 mod analysis;
-mod color;
 mod export;
 mod gif;
-mod lut;
 mod player;
 mod presets;
 mod project;

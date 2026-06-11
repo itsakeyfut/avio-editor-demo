@@ -43,6 +43,12 @@ pub struct ExportClip {
     pub wb_temperature: u32,
     /// White-balance tint (added to the green multiplier).
     pub wb_tint: f32,
+    /// Hue rotation in degrees (0.0 = off).
+    pub hue_degrees: f32,
+    /// Per-channel gamma (1.0 = off).
+    pub gamma_r: f32,
+    pub gamma_g: f32,
+    pub gamma_b: f32,
 }
 
 /// Send-safe snapshot of all timeline tracks, constructed on the main thread
@@ -127,6 +133,65 @@ pub fn spawn_queue_job(job: &mut QueueJob) -> bool {
     true
 }
 
+/// Attaches a clip's colour grade to `clip` in canonical order
+/// (`Eq → WhiteBalance → Hue → Gamma → Lut3d`), skipping neutral steps.
+///
+/// Brightness/contrast/saturation go through `Clip::with_color_correction` (the
+/// native `eq` path that `Clip::video_effect_chain` emits); the rest are attached
+/// as `FilterStep`s. Shared by export ([`clips_to_avio`]) and the timeline preview
+/// (via `Clip::apply_video_effects`) so both apply the identical chain — the
+/// preview then matches the rendered output.
+#[allow(clippy::float_cmp, clippy::too_many_arguments)]
+pub fn apply_color_grade(
+    clip: avio::Clip,
+    brightness: f32,
+    contrast: f32,
+    saturation: f32,
+    wb_temperature: u32,
+    wb_tint: f32,
+    hue_degrees: f32,
+    gamma_r: f32,
+    gamma_g: f32,
+    gamma_b: f32,
+    lut_path: Option<&std::path::Path>,
+) -> avio::Clip {
+    let clip = if brightness != 0.0 || contrast != 1.0 || saturation != 1.0 {
+        clip.with_color_correction(brightness, contrast, saturation)
+    } else {
+        clip
+    };
+    let clip = if wb_temperature != crate::state::WB_NEUTRAL_TEMP || wb_tint != 0.0 {
+        clip.with_video_effect(avio::FilterStep::WhiteBalance {
+            temperature_k: wb_temperature,
+            tint: wb_tint,
+        })
+    } else {
+        clip
+    };
+    let clip = if hue_degrees != 0.0 {
+        clip.with_video_effect(avio::FilterStep::Hue {
+            degrees: hue_degrees,
+        })
+    } else {
+        clip
+    };
+    let clip = if gamma_r != 1.0 || gamma_g != 1.0 || gamma_b != 1.0 {
+        clip.with_video_effect(avio::FilterStep::Gamma {
+            r: gamma_r,
+            g: gamma_g,
+            b: gamma_b,
+        })
+    } else {
+        clip
+    };
+    match lut_path {
+        Some(p) => clip.with_video_effect(avio::FilterStep::Lut3d {
+            path: p.to_string_lossy().into_owned(),
+        }),
+        None => clip,
+    }
+}
+
 fn clips_to_avio(clips: Vec<ExportClip>) -> Vec<avio::Clip> {
     clips
         .into_iter()
@@ -165,29 +230,22 @@ fn clips_to_avio(clips: Vec<ExportClip>) -> Vec<avio::Clip> {
                 Some(kind) => clip.with_transition(kind, c.transition_duration),
                 None => clip,
             };
-            #[allow(clippy::float_cmp)]
-            let clip = if c.brightness != 0.0 || c.contrast != 1.0 || c.saturation != 1.0 {
-                clip.with_color_correction(c.brightness, c.contrast, c.saturation)
-            } else {
-                clip
-            };
-            // White balance after exposure/contrast, before the LUT look.
-            #[allow(clippy::float_cmp)]
-            let clip = if c.wb_temperature != crate::state::WB_NEUTRAL_TEMP || c.wb_tint != 0.0 {
-                clip.with_video_effect(avio::FilterStep::WhiteBalance {
-                    temperature_k: c.wb_temperature,
-                    tint: c.wb_tint,
-                })
-            } else {
-                clip
-            };
-            // 3D LUT applied after colour correction (correct exposure, then look).
-            let clip = match &c.lut_path {
-                Some(p) => clip.with_video_effect(avio::FilterStep::Lut3d {
-                    path: p.to_string_lossy().into_owned(),
-                }),
-                None => clip,
-            };
+            // Colour grading chain (Eq → WB → Hue → Gamma → LUT). Built from the
+            // shared `apply_color_grade` so export and the preview
+            // (`Clip::apply_video_effects`) apply the identical chain.
+            let clip = apply_color_grade(
+                clip,
+                c.brightness,
+                c.contrast,
+                c.saturation,
+                c.wb_temperature,
+                c.wb_tint,
+                c.hue_degrees,
+                c.gamma_r,
+                c.gamma_g,
+                c.gamma_b,
+                c.lut_path.as_deref(),
+            );
             #[allow(clippy::float_cmp)]
             let clip = if c.opacity != 1.0 {
                 clip.with_opacity(c.opacity)
@@ -457,5 +515,228 @@ fn build_and_render(
         Ok(()) => Ok(()),
         Err(_) if cancel.load(Ordering::Relaxed) => Err("cancelled".to_string()),
         Err(e) => Err(e.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // The values asserted below are passed straight through (no arithmetic),
+    // so exact float comparison is intentional and correct here.
+    #![allow(clippy::float_cmp)]
+
+    use super::apply_color_grade;
+    use crate::state::WB_NEUTRAL_TEMP;
+    use std::path::Path;
+
+    /// Builds the canonical effect chain that `Clip::apply_video_effects` and
+    /// `Timeline::render()` will run for the given grade, via `video_effect_chain`.
+    #[allow(clippy::too_many_arguments)]
+    fn chain(
+        brightness: f32,
+        contrast: f32,
+        saturation: f32,
+        wb_temperature: u32,
+        wb_tint: f32,
+        hue_degrees: f32,
+        gamma_r: f32,
+        gamma_g: f32,
+        gamma_b: f32,
+        lut_path: Option<&Path>,
+    ) -> Vec<avio::FilterStep> {
+        apply_color_grade(
+            avio::Clip::new("test.mp4"),
+            brightness,
+            contrast,
+            saturation,
+            wb_temperature,
+            wb_tint,
+            hue_degrees,
+            gamma_r,
+            gamma_g,
+            gamma_b,
+            lut_path,
+        )
+        .video_effect_chain()
+    }
+
+    /// Neutral parameters across the board produce no steps, so an untouched
+    /// clip renders bit-identical (the whole chain is skipped).
+    #[test]
+    fn neutral_params_produce_no_steps() {
+        let steps = chain(
+            0.0,
+            1.0,
+            1.0,
+            WB_NEUTRAL_TEMP,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            1.0,
+            None,
+        );
+        assert!(steps.is_empty());
+    }
+
+    /// Any of brightness/contrast/saturation differing from neutral emits a
+    /// single `Eq` step carrying all three values verbatim.
+    #[test]
+    fn eq_step_carries_all_three_values() {
+        let steps = chain(
+            0.2,
+            1.5,
+            0.8,
+            WB_NEUTRAL_TEMP,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            1.0,
+            None,
+        );
+        assert_eq!(steps.len(), 1);
+        match &steps[0] {
+            avio::FilterStep::Eq {
+                brightness,
+                contrast,
+                saturation,
+            } => {
+                assert_eq!(*brightness, 0.2);
+                assert_eq!(*contrast, 1.5);
+                assert_eq!(*saturation, 0.8);
+            }
+            other => panic!("expected Eq, got {other:?}"),
+        }
+    }
+
+    /// White balance is emitted when the temperature differs from neutral...
+    #[test]
+    fn white_balance_emitted_on_temperature_change() {
+        let steps = chain(0.0, 1.0, 1.0, 5000, 0.0, 0.0, 1.0, 1.0, 1.0, None);
+        assert_eq!(steps.len(), 1);
+        match &steps[0] {
+            avio::FilterStep::WhiteBalance {
+                temperature_k,
+                tint,
+            } => {
+                assert_eq!(*temperature_k, 5000);
+                assert_eq!(*tint, 0.0);
+            }
+            other => panic!("expected WhiteBalance, got {other:?}"),
+        }
+    }
+
+    /// ...or when only the tint differs (temperature still neutral).
+    #[test]
+    fn white_balance_emitted_on_tint_change() {
+        let steps = chain(
+            0.0,
+            1.0,
+            1.0,
+            WB_NEUTRAL_TEMP,
+            0.1,
+            0.0,
+            1.0,
+            1.0,
+            1.0,
+            None,
+        );
+        assert_eq!(steps.len(), 1);
+        assert!(matches!(steps[0], avio::FilterStep::WhiteBalance { .. }));
+    }
+
+    /// A non-zero hue emits a single `Hue` step carrying the angle.
+    #[test]
+    fn hue_step_carries_degrees() {
+        let steps = chain(
+            0.0,
+            1.0,
+            1.0,
+            WB_NEUTRAL_TEMP,
+            0.0,
+            45.0,
+            1.0,
+            1.0,
+            1.0,
+            None,
+        );
+        assert_eq!(steps.len(), 1);
+        match &steps[0] {
+            avio::FilterStep::Hue { degrees } => assert_eq!(*degrees, 45.0),
+            other => panic!("expected Hue, got {other:?}"),
+        }
+    }
+
+    /// Any per-channel gamma differing from 1.0 emits a single `Gamma` step.
+    #[test]
+    fn gamma_step_carries_per_channel_values() {
+        let steps = chain(
+            0.0,
+            1.0,
+            1.0,
+            WB_NEUTRAL_TEMP,
+            0.0,
+            0.0,
+            1.1,
+            0.9,
+            1.2,
+            None,
+        );
+        assert_eq!(steps.len(), 1);
+        match &steps[0] {
+            avio::FilterStep::Gamma { r, g, b } => {
+                assert_eq!(*r, 1.1);
+                assert_eq!(*g, 0.9);
+                assert_eq!(*b, 1.2);
+            }
+            other => panic!("expected Gamma, got {other:?}"),
+        }
+    }
+
+    /// A LUT path emits a `Lut3d` step with the path stringified.
+    #[test]
+    fn lut_step_carries_path() {
+        let steps = chain(
+            0.0,
+            1.0,
+            1.0,
+            WB_NEUTRAL_TEMP,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            1.0,
+            Some(Path::new("look.cube")),
+        );
+        assert_eq!(steps.len(), 1);
+        match &steps[0] {
+            avio::FilterStep::Lut3d { path } => assert_eq!(path, "look.cube"),
+            other => panic!("expected Lut3d, got {other:?}"),
+        }
+    }
+
+    /// With every effect active the steps appear in canonical order
+    /// `Eq → WhiteBalance → Hue → Gamma → Lut3d` — the same order export and
+    /// the preview both rely on.
+    #[test]
+    fn full_chain_is_in_canonical_order() {
+        let steps = chain(
+            0.1,
+            1.2,
+            1.3,
+            5000,
+            0.05,
+            45.0,
+            1.1,
+            0.9,
+            1.0,
+            Some(Path::new("look.cube")),
+        );
+        assert_eq!(steps.len(), 5);
+        assert!(matches!(steps[0], avio::FilterStep::Eq { .. }));
+        assert!(matches!(steps[1], avio::FilterStep::WhiteBalance { .. }));
+        assert!(matches!(steps[2], avio::FilterStep::Hue { .. }));
+        assert!(matches!(steps[3], avio::FilterStep::Gamma { .. }));
+        assert!(matches!(steps[4], avio::FilterStep::Lut3d { .. }));
     }
 }
