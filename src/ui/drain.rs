@@ -165,9 +165,13 @@ fn drain_timeline_player(state: &mut AppState) {
 }
 
 fn drain_frame(state: &mut AppState, ctx: &egui::Context) {
-    if let Ok(mut guard) = state.frame_handle.try_lock()
-        && let Some(mut frame) = guard.take()
-    {
+    // Take the latest frame and release the lock immediately so the rest of the
+    // function has full (mutable) access to `state` (e.g. the preview grade cache).
+    let taken = match state.frame_handle.try_lock() {
+        Ok(mut guard) => guard.take(),
+        Err(_) => None,
+    };
+    if let Some(mut frame) = taken {
         // Route PTS to the right player's position indicator
         let is_timeline = state
             .timeline_player_thread
@@ -191,58 +195,15 @@ fn drain_frame(state: &mut AppState, ctx: &egui::Context) {
                 state.timeline_playhead_secs = loop_in.as_secs_f64();
             }
 
-            // Apply per-clip color correction for preview.
-            // Find the active V1 clip at the current frame PTS and apply its
-            // brightness/contrast/saturation (and LUT) as software RGBA transforms.
-            let pts = frame.pts;
-            let active = state.timeline.tracks.first().and_then(|track| {
-                track.clips.iter().find(|tc| {
-                    let start = tc.start_on_track;
-                    let eff_dur = match (tc.in_point, tc.out_point) {
-                        (Some(i), Some(o)) if o > i => o - i,
-                        _ => state
-                            .clips
-                            .get(tc.source_index)
-                            .map(|c| c.info.duration())
-                            .unwrap_or(std::time::Duration::ZERO),
-                    };
-                    pts >= start && pts < start + eff_dur
-                })
-            });
-            let correction = active.map(|tc| (tc.brightness, tc.contrast, tc.saturation));
-            let white_balance = active.map(|tc| (tc.wb_temperature, tc.wb_tint));
-            let lut_path = active.and_then(|tc| tc.lut_path.clone());
-
+            // Apply the active clip's colour grading via a cached avio preview
+            // renderer (the same effect chain and yuv420p working space as export),
+            // so the preview matches the rendered output. The renderer is rebuilt
+            // only when the grade or frame size changes.
             let is_rgba = frame.data.len() == frame.width as usize * frame.height as usize * 4;
-            #[allow(clippy::float_cmp)]
-            if is_rgba
-                && let Some((b, c, s)) = correction
-                && (b != 0.0 || c != 1.0 || s != 1.0)
-            {
-                apply_eq_rgba(&mut frame.data, b, c, s);
-            }
-            // White balance after exposure/contrast, before the LUT (export order).
-            #[allow(clippy::float_cmp)]
-            if is_rgba
-                && let Some((temp, tint)) = white_balance
-                && (temp != crate::state::WB_NEUTRAL_TEMP || tint != 0.0)
-            {
-                crate::color::apply_white_balance_rgba(&mut frame.data, temp, tint);
-            }
-            // LUT applied after colour correction (matches the export order).
-            if is_rgba && let Some(path) = lut_path {
-                let lut = state.lut_cache.entry(path.clone()).or_insert_with(|| {
-                    match crate::lut::Lut3d::parse(&path) {
-                        Ok(l) => Some(l),
-                        Err(e) => {
-                            log::warn!("LUT preview parse failed for {}: {e}", path.display());
-                            None
-                        }
-                    }
-                });
-                if let Some(lut) = lut {
-                    lut.apply_rgba(&mut frame.data);
-                }
+            if is_rgba {
+                update_preview_grade(state, frame.pts, frame.width, frame.height, &mut frame.data);
+            } else {
+                state.preview_renderer_cache = None;
             }
         } else {
             state.current_pts = Some(frame.pts);
@@ -274,32 +235,122 @@ fn drain_frame(state: &mut AppState, ctx: &egui::Context) {
     }
 }
 
-/// Applies brightness / contrast / saturation to packed RGBA pixel data in place.
+/// Returns the colour-grading signature and a grading `Clip` for the timeline clip
+/// active at `pts`, or `None` when no clip is active or its grade is neutral
+/// (nothing to do). `width`/`height` are folded into the signature so the cached
+/// renderer is rebuilt when the frame size changes.
 ///
-/// Matches the FFmpeg `eq` filter formula applied in RGB space:
-/// - saturation: mix between Rec.709 luma and original colour
-/// - contrast + brightness: `out = (in − 0.5) × contrast + 0.5 + brightness`
-fn apply_eq_rgba(data: &mut [u8], brightness: f32, contrast: f32, saturation: f32) {
-    for chunk in data.chunks_exact_mut(4) {
-        let r = chunk[0] as f32 / 255.0;
-        let g = chunk[1] as f32 / 255.0;
-        let b = chunk[2] as f32 / 255.0;
+/// The clip's source path is only a carrier — the preview renderer never decodes
+/// it; it just runs the attached effect chain on the frame we feed it.
+fn active_clip_grade(
+    state: &AppState,
+    pts: std::time::Duration,
+    width: u32,
+    height: u32,
+) -> Option<(crate::state::PreviewColorSig, avio::Clip)> {
+    let track = state.timeline.tracks.first()?;
+    let tc = track.clips.iter().find(|tc| {
+        let start = tc.start_on_track;
+        let eff_dur = match (tc.in_point, tc.out_point) {
+            (Some(i), Some(o)) if o > i => o - i,
+            _ => state
+                .clips
+                .get(tc.source_index)
+                .map(|c| c.info.duration())
+                .unwrap_or(std::time::Duration::ZERO),
+        };
+        pts >= start && pts < start + eff_dur
+    })?;
+    let path = state
+        .clips
+        .get(tc.source_index)
+        .map(|c| c.path.clone())
+        .unwrap_or_default();
+    let clip = crate::export::apply_color_grade(
+        avio::Clip::new(&path),
+        tc.brightness,
+        tc.contrast,
+        tc.saturation,
+        tc.wb_temperature,
+        tc.wb_tint,
+        tc.hue_degrees,
+        tc.gamma_r,
+        tc.gamma_g,
+        tc.gamma_b,
+        tc.lut_path.as_deref(),
+    );
+    // Neutral grade → empty chain → nothing to apply.
+    if clip.video_effect_chain().is_empty() {
+        return None;
+    }
+    let sig = crate::state::PreviewColorSig {
+        brightness: tc.brightness,
+        contrast: tc.contrast,
+        saturation: tc.saturation,
+        wb_temperature: tc.wb_temperature,
+        wb_tint: tc.wb_tint,
+        hue_degrees: tc.hue_degrees,
+        gamma_r: tc.gamma_r,
+        gamma_g: tc.gamma_g,
+        gamma_b: tc.gamma_b,
+        lut_path: tc.lut_path.clone(),
+        width,
+        height,
+    };
+    Some((sig, clip))
+}
 
-        // Saturation via Rec.709 luma
-        let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-        let r = luma + (r - luma) * saturation;
-        let g = luma + (g - luma) * saturation;
-        let b = luma + (b - luma) * saturation;
+/// Applies the active clip's colour grading to a packed-RGBA preview frame via a
+/// cached [`avio::VideoEffectRenderer`] — the same chain and `yuv420p` working
+/// space as export — so the monitor matches the rendered output (up to codec/4:2:0).
+/// The renderer is rebuilt only when the grade or frame size changes.
+fn update_preview_grade(
+    state: &mut AppState,
+    pts: std::time::Duration,
+    width: u32,
+    height: u32,
+    data: &mut Vec<u8>,
+) {
+    let Some((sig, clip)) = active_clip_grade(state, pts, width, height) else {
+        state.preview_renderer_cache = None;
+        return;
+    };
 
-        // Contrast + brightness
-        let r = ((r - 0.5) * contrast + 0.5 + brightness).clamp(0.0, 1.0);
-        let g = ((g - 0.5) * contrast + 0.5 + brightness).clamp(0.0, 1.0);
-        let b = ((b - 0.5) * contrast + 0.5 + brightness).clamp(0.0, 1.0);
+    let need_rebuild = state
+        .preview_renderer_cache
+        .as_ref()
+        .is_none_or(|c| c.sig != sig);
+    if need_rebuild {
+        match clip.video_effect_renderer(avio::PixelFormat::Rgba) {
+            Ok(renderer) => {
+                state.preview_renderer_cache =
+                    Some(crate::state::PreviewRendererCache { sig, renderer });
+            }
+            Err(e) => {
+                log::warn!("preview grade renderer build failed: {e}");
+                state.preview_renderer_cache = None;
+                return;
+            }
+        }
+    }
 
-        chunk[0] = (r * 255.0 + 0.5) as u8;
-        chunk[1] = (g * 255.0 + 0.5) as u8;
-        chunk[2] = (b * 255.0 + 0.5) as u8;
-        // alpha (chunk[3]) unchanged
+    let Some(cache) = state.preview_renderer_cache.as_mut() else {
+        return;
+    };
+    let input = match avio::VideoFrame::from_rgba(width, height, data.clone()) {
+        Ok(vf) => vf,
+        Err(e) => {
+            log::warn!("preview grade: from_rgba failed: {e}");
+            return;
+        }
+    };
+    match cache.renderer.render(&input) {
+        Ok(out) => {
+            if let Some(rgba) = out.to_rgba() {
+                *data = rgba;
+            }
+        }
+        Err(e) => log::warn!("preview grade failed: {e}"),
     }
 }
 

@@ -240,6 +240,10 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         lut_path: tc.lut_path.clone(),
                         wb_temperature: tc.wb_temperature,
                         wb_tint: tc.wb_tint,
+                        hue_degrees: tc.hue_degrees,
+                        gamma_r: tc.gamma_r,
+                        gamma_g: tc.gamma_g,
+                        gamma_b: tc.gamma_b,
                     }
                 };
                 let tracks = &state.timeline.tracks;
@@ -958,6 +962,37 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                             clip.wb_tint = 0.0;
                         }
                     });
+                    // Hue rotation + per-channel gamma, via avio Hue / Gamma.
+                    ui.horizontal(|ui| {
+                        ui.label("Hue °");
+                        ui.add(
+                            egui::Slider::new(&mut clip.hue_degrees, -180.0..=180.0)
+                                .fixed_decimals(0),
+                        );
+                        ui.separator();
+                        ui.label("Gamma R");
+                        ui.add(egui::Slider::new(&mut clip.gamma_r, 0.1..=3.0).fixed_decimals(2));
+                        ui.label("G");
+                        ui.add(egui::Slider::new(&mut clip.gamma_g, 0.1..=3.0).fixed_decimals(2));
+                        ui.label("B");
+                        ui.add(egui::Slider::new(&mut clip.gamma_b, 0.1..=3.0).fixed_decimals(2));
+                        ui.separator();
+                        #[allow(clippy::float_cmp)]
+                        let hsl_off = clip.hue_degrees == 0.0
+                            && clip.gamma_r == 1.0
+                            && clip.gamma_g == 1.0
+                            && clip.gamma_b == 1.0;
+                        if ui
+                            .add_enabled(!hsl_off, egui::Button::new("Reset"))
+                            .on_hover_text("Reset hue and gamma to neutral")
+                            .clicked()
+                        {
+                            clip.hue_degrees = 0.0;
+                            clip.gamma_r = 1.0;
+                            clip.gamma_g = 1.0;
+                            clip.gamma_b = 1.0;
+                        }
+                    });
                     // 3D LUT (.cube) — export-only via avio Clip effect chain.
                     ui.horizontal(|ui| {
                         ui.label("LUT (.cube)");
@@ -979,7 +1014,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                             ui.weak(name);
                         }
                     });
-                    ui.weak("Color correction applied on Export only (ff-preview limitation — docs/issue40.md). Speed applies to preview and export; audio pitch changes proportionally in preview (no pitch correction — docs/issue42.md). Opacity applies to preview (V1 fades to black; V2 fades over V1). Blend mode applies to export only (docs/issue43.md). LUT applies to preview and export.");
+                    ui.weak("Color correction applied on Export only (ff-preview limitation — docs/issue40.md). Speed applies to preview and export; audio pitch changes proportionally in preview (no pitch correction — docs/issue42.md). Opacity applies to preview (V1 fades to black; V2 fades over V1). Blend mode applies to export only (docs/issue43.md). LUT applies to preview and export. Hue/Gamma preview is approximate (export is the avio result).");
                 });
         }
     }
@@ -2882,6 +2917,10 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             lut_path: None,
             wb_temperature: state::WB_NEUTRAL_TEMP,
             wb_tint: 0.0,
+            hue_degrees: 0.0,
+            gamma_r: 1.0,
+            gamma_g: 1.0,
+            gamma_b: 1.0,
         };
         // Sorted insert so that out-of-order drops don't corrupt array order.
         let track = &mut state.timeline.tracks[track_idx].clips;
@@ -3013,6 +3052,10 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 lut_path: state.timeline.tracks[ti].clips[ci].lut_path.clone(),
                 wb_temperature: state.timeline.tracks[ti].clips[ci].wb_temperature,
                 wb_tint: state.timeline.tracks[ti].clips[ci].wb_tint,
+                hue_degrees: state.timeline.tracks[ti].clips[ci].hue_degrees,
+                gamma_r: state.timeline.tracks[ti].clips[ci].gamma_r,
+                gamma_g: state.timeline.tracks[ti].clips[ci].gamma_g,
+                gamma_b: state.timeline.tracks[ti].clips[ci].gamma_b,
             };
             state.timeline.tracks[ti].clips.insert(ci + 1, right);
         }

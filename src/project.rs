@@ -57,10 +57,22 @@ pub struct ProjectTimelineClip {
     pub wb_temperature: u32,
     #[serde(default)]
     pub wb_tint: f32,
+    #[serde(default)]
+    pub hue_degrees: f32,
+    #[serde(default = "default_gamma")]
+    pub gamma_r: f32,
+    #[serde(default = "default_gamma")]
+    pub gamma_g: f32,
+    #[serde(default = "default_gamma")]
+    pub gamma_b: f32,
 }
 
 fn default_wb_temperature() -> u32 {
     crate::state::WB_NEUTRAL_TEMP
+}
+
+fn default_gamma() -> f32 {
+    1.0
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -203,6 +215,10 @@ fn timeline_clip_to_project(tc: &TimelineClip, clips: &[ImportedClip]) -> Projec
             .map(|p| p.to_string_lossy().into_owned()),
         wb_temperature: tc.wb_temperature,
         wb_tint: tc.wb_tint,
+        hue_degrees: tc.hue_degrees,
+        gamma_r: tc.gamma_r,
+        gamma_g: tc.gamma_g,
+        gamma_b: tc.gamma_b,
     }
 }
 
@@ -237,6 +253,10 @@ fn project_to_timeline_clip(
         lut_path: ptc.lut_path.as_ref().map(PathBuf::from),
         wb_temperature: ptc.wb_temperature,
         wb_tint: ptc.wb_tint,
+        hue_degrees: ptc.hue_degrees,
+        gamma_r: ptc.gamma_r,
+        gamma_g: ptc.gamma_g,
+        gamma_b: ptc.gamma_b,
     })
 }
 
