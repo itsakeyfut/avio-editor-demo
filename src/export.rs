@@ -406,20 +406,26 @@ fn build_and_render(
             .and_then(|v| v.first())
             .map(|c| c.fps)
             .unwrap_or(30.0);
-        let total_dur: Duration = snapshot
+        // Use the full timeline duration — the latest clip end-time across ALL
+        // video tracks — because the composition runs until the longest layer,
+        // not just the V1 track. A V1-only estimate undercounts when an overlay
+        // (V2…) is longer than V1, leaving the bar stuck at 99% while the tail
+        // of the longer layer is still encoding.
+        let total_dur_secs: f64 = snapshot
             .video_clips
-            .first()
-            .map(|v| {
-                v.iter()
-                    .map(|c| {
-                        let end = c.out_point.unwrap_or(c.source_duration);
-                        let start = c.in_point.unwrap_or(Duration::ZERO);
-                        end.saturating_sub(start)
-                    })
-                    .sum()
+            .iter()
+            .flat_map(|track| track.iter())
+            .map(|c| {
+                let dur = c
+                    .out_point
+                    .zip(c.in_point)
+                    .map(|(op, ip)| op.saturating_sub(ip))
+                    .or(c.out_point)
+                    .unwrap_or(c.source_duration);
+                c.start_on_track.as_secs_f64() + dur.as_secs_f64()
             })
-            .unwrap_or(Duration::ZERO);
-        let frames = (total_dur.as_secs_f64() * fps).round() as u64;
+            .fold(0.0_f64, f64::max);
+        let frames = (total_dur_secs * fps).round() as u64;
         if frames > 0 { Some(frames) } else { None }
     };
 
