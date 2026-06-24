@@ -15,6 +15,9 @@ pub struct ExportClip {
     pub source_duration: Duration,
     /// Frame rate of the source clip — used to estimate total_frames for progress.
     pub fps: f64,
+    /// Whether the source has an audio stream. Used to decide which video tracks
+    /// contribute embedded audio to the export mix (matching the preview).
+    pub has_audio: bool,
     /// Per-clip audio gain in dB (`0.0` = unity). Applied via `Clip::volume_db` on A1 clips.
     pub gain_db: f32,
     /// Audio fade-in duration (`Duration::ZERO` = no fade).
@@ -457,6 +460,12 @@ fn build_and_render(
         None
     };
 
+    // Which video tracks carry embedded audio — mixed into the export audio below.
+    let video_track_has_audio: Vec<bool> = snapshot
+        .video_clips
+        .iter()
+        .map(|track| track.iter().any(|c| c.has_audio))
+        .collect();
     let avio_video: Vec<Vec<avio::Clip>> = snapshot
         .video_clips
         .into_iter()
@@ -469,13 +478,6 @@ fn build_and_render(
     }
 
     let config = snapshot.encoder_config.to_encoder_config();
-
-    // When A1 has no clips, mirror V1 so the video clips' embedded audio is exported.
-    let effective_a1 = if a1.is_empty() {
-        avio_video[0].clone()
-    } else {
-        a1
-    };
 
     let mut builder = avio::Timeline::builder().video_track(avio_video[0].clone());
 
@@ -491,13 +493,21 @@ fn build_and_render(
     // cannot be attached to Timeline — same gap as color balance (docs/issue13.md).
     // loudness_normalize is stored but not applied during render.
 
-    for vn in avio_video.into_iter().skip(1) {
+    for vn in avio_video.iter().skip(1) {
         if !vn.is_empty() {
-            builder = builder.video_track(vn);
+            builder = builder.video_track(vn.clone());
         }
     }
-    if !effective_a1.is_empty() {
-        builder = builder.audio_track(effective_a1);
+    // Audio: mix the embedded audio of every video track that has an audio stream,
+    // plus the dedicated A1 track — matching the preview, which plays them all.
+    // avio mixes multiple audio tracks via its MultiTrackAudioMixer.
+    for (ti, vt) in avio_video.iter().enumerate() {
+        if !vt.is_empty() && video_track_has_audio.get(ti).copied().unwrap_or(false) {
+            builder = builder.audio_track(vt.clone());
+        }
+    }
+    if !a1.is_empty() {
+        builder = builder.audio_track(a1);
     }
     if let Some(lavfi_str) = lavfi_overlay {
         builder = builder.lavfi_overlay(lavfi_str);

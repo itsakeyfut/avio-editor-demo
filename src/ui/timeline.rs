@@ -223,6 +223,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         transition_duration: tc.transition_duration,
                         source_duration: src.info.duration(),
                         fps: src.info.frame_rate().unwrap_or(30.0),
+                        has_audio: src.info.primary_audio().is_some(),
                         gain_db: tc.gain_db,
                         fade_in: tc.fade_in,
                         fade_out: tc.fade_out,
