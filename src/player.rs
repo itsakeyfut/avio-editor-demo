@@ -27,6 +27,18 @@ pub struct TrackClipData {
     pub contrast: f32,
     /// Per-clip saturation. `1.0` = no change.
     pub saturation: f32,
+    /// White-balance colour temperature (Kelvin). `WB_NEUTRAL_TEMP` + tint 0 = off.
+    pub wb_temperature: u32,
+    /// White-balance tint (added to the green multiplier).
+    pub wb_tint: f32,
+    /// Hue rotation in degrees (`0.0` = off).
+    pub hue_degrees: f32,
+    /// Per-channel gamma (`1.0` = off).
+    pub gamma_r: f32,
+    pub gamma_g: f32,
+    pub gamma_b: f32,
+    /// Optional 3D LUT (.cube) path.
+    pub lut_path: Option<PathBuf>,
     /// Per-clip playback speed multiplier. `1.0` = normal speed.
     pub speed: f32,
     /// Per-clip opacity (`1.0` = fully opaque). Forwarded to `Clip::with_opacity`.
@@ -409,10 +421,22 @@ pub fn spawn_timeline_player(
             if let Some(kind) = tc.transition {
                 c = c.with_transition(kind, tc.transition_duration);
             }
-            #[allow(clippy::float_cmp)]
-            if tc.brightness != 0.0 || tc.contrast != 1.0 || tc.saturation != 1.0 {
-                c = c.with_color_correction(tc.brightness, tc.contrast, tc.saturation);
-            }
+            // Full colour grade (Eq → WB → Hue → Gamma → LUT), shared with export.
+            // The preview player applies these via avio's RealtimeComposer, so the
+            // monitor matches the rendered output without any host-side re-grading.
+            c = crate::export::apply_color_grade(
+                c,
+                tc.brightness,
+                tc.contrast,
+                tc.saturation,
+                tc.wb_temperature,
+                tc.wb_tint,
+                tc.hue_degrees,
+                tc.gamma_r,
+                tc.gamma_g,
+                tc.gamma_b,
+                tc.lut_path.as_deref(),
+            );
             #[allow(clippy::float_cmp)]
             if tc.opacity != 1.0 {
                 c = c.with_opacity(tc.opacity);
