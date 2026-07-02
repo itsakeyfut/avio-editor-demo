@@ -64,6 +64,8 @@ pub struct ExportClip {
     pub height: u32,
     /// Per-clip tone curves (Luma + R/G/B). Attached via `FilterStep::Curves`.
     pub curves: crate::state::ToneCurves,
+    /// Per-clip 3-way colour corrector. Attached via `FilterStep::ThreeWayCC`.
+    pub wheels: crate::state::ColorWheels,
 }
 
 /// Send-safe snapshot of all timeline tracks, constructed on the main thread
@@ -148,8 +150,30 @@ pub fn spawn_queue_job(job: &mut QueueJob) -> bool {
     true
 }
 
+/// Maps a [`ColorWheel`](crate::state::ColorWheel) to an avio per-channel `Rgb`
+/// (neutral `1.0`). The wheel's colour offset is projected onto R/G/B axes placed
+/// at 90° / 210° / 330° (R up); `luma` shifts all channels together. This is a
+/// demo approximation — avio's `ThreeWayCC` is itself a 3-point curves model.
+fn wheel_to_rgb(w: crate::state::ColorWheel, is_gamma: bool) -> avio::Rgb {
+    const COLOR_SCALE: f32 = 0.25;
+    const LUMA_SCALE: f32 = 0.25;
+    let contrib_r = w.y;
+    let contrib_g = -0.866 * w.x - 0.5 * w.y;
+    let contrib_b = 0.866 * w.x - 0.5 * w.y;
+    let base = 1.0 + w.luma * LUMA_SCALE;
+    let mk = |contrib: f32| {
+        let v = base + contrib * COLOR_SCALE;
+        if is_gamma { v.max(0.1) } else { v.max(0.0) }
+    };
+    avio::Rgb {
+        r: mk(contrib_r),
+        g: mk(contrib_g),
+        b: mk(contrib_b),
+    }
+}
+
 /// Attaches a clip's colour grade to `clip` in canonical order
-/// (`Eq → WhiteBalance → Hue → Gamma → Curves → Lut3d → Vignette`), skipping neutral steps.
+/// (`Eq → WhiteBalance → Hue → Gamma → ThreeWayCC → Curves → Lut3d → Vignette`), skipping neutral steps.
 ///
 /// Brightness/contrast/saturation go through `Clip::with_color_correction` (the
 /// native `eq` path that `Clip::video_effect_chain` emits); the rest are attached
@@ -168,6 +192,7 @@ pub fn apply_color_grade(
     gamma_r: f32,
     gamma_g: f32,
     gamma_b: f32,
+    wheels: &crate::state::ColorWheels,
     curves: &crate::state::ToneCurves,
     lut_path: Option<&std::path::Path>,
     vignette: f32,
@@ -204,6 +229,15 @@ pub fn apply_color_grade(
         })
     } else {
         clip
+    };
+    let clip = if wheels.is_neutral() {
+        clip
+    } else {
+        clip.with_video_effect(avio::FilterStep::ThreeWayCC {
+            lift: wheel_to_rgb(wheels.lift, false),
+            gamma: wheel_to_rgb(wheels.gamma, true),
+            gain: wheel_to_rgb(wheels.gain, false),
+        })
     };
     let clip = if curves.is_neutral() {
         clip
@@ -273,7 +307,7 @@ fn clips_to_avio(clips: Vec<ExportClip>) -> Vec<avio::Clip> {
                 Some(kind) => clip.with_transition(kind, c.transition_duration),
                 None => clip,
             };
-            // Colour grading chain (Eq → WB → Hue → Gamma → Curves → LUT → Vignette). Built from the
+            // Colour grading chain (Eq → WB → Hue → Gamma → ThreeWayCC → Curves → LUT → Vignette). Built from the
             // shared `apply_color_grade` so export and the preview
             // (`Clip::apply_video_effects`) apply the identical chain.
             let clip = apply_color_grade(
@@ -287,6 +321,7 @@ fn clips_to_avio(clips: Vec<ExportClip>) -> Vec<avio::Clip> {
                 c.gamma_r,
                 c.gamma_g,
                 c.gamma_b,
+                &c.wheels,
                 &c.curves,
                 c.lut_path.as_deref(),
                 c.vignette,
@@ -616,7 +651,8 @@ mod tests {
             gamma_r,
             gamma_g,
             gamma_b,
-            &crate::state::ToneCurves::default(), // curves (neutral)
+            &crate::state::ColorWheels::default(), // wheels (neutral)
+            &crate::state::ToneCurves::default(),  // curves (neutral)
             lut_path,
             0.0,  // vignette (neutral)
             50.0, // vignette_x
@@ -823,6 +859,7 @@ mod tests {
             1.0,
             1.0,
             1.0,
+            &crate::state::ColorWheels::default(),
             &crate::state::ToneCurves::default(),
             None,
             50.0, // strength %
@@ -857,6 +894,7 @@ mod tests {
             1.0,
             1.0,
             1.0,
+            &crate::state::ColorWheels::default(),
             &crate::state::ToneCurves::default(),
             None,
             0.0,
@@ -890,6 +928,7 @@ mod tests {
             1.0,
             1.0,
             1.0,
+            &crate::state::ColorWheels::default(),
             &curves,
             None,
             0.0,
@@ -908,6 +947,46 @@ mod tests {
                 assert!(b.is_empty());
             }
             other => panic!("expected Curves, got {other:?}"),
+        }
+    }
+
+    /// A non-neutral colour wheel appends a `ThreeWayCC` step; a neutral one is
+    /// skipped. Gamma channels stay `> 0`.
+    #[test]
+    fn color_wheels_map_to_three_way_cc() {
+        let mut wheels = crate::state::ColorWheels::default();
+        wheels.gain.y = 1.0; // push highlights toward red
+        let steps = apply_color_grade(
+            avio::Clip::new("test.mp4"),
+            0.0,
+            1.0,
+            1.0,
+            WB_NEUTRAL_TEMP,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            1.0,
+            &wheels,
+            &crate::state::ToneCurves::default(),
+            None,
+            0.0,
+            50.0,
+            50.0,
+            1920,
+            1080,
+        )
+        .video_effect_chain();
+        assert_eq!(steps.len(), 1);
+        match &steps[0] {
+            avio::FilterStep::ThreeWayCC { gain, gamma, .. } => {
+                // gain.r raised (red), gain.g/b lowered by the 0.25 colour scale.
+                assert!(gain.r > 1.0);
+                assert!(gain.g < 1.0 && gain.b < 1.0);
+                // gamma stays neutral and positive.
+                assert!(gamma.r > 0.0 && gamma.g > 0.0 && gamma.b > 0.0);
+            }
+            other => panic!("expected ThreeWayCC, got {other:?}"),
         }
     }
 }
