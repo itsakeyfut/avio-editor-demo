@@ -45,6 +45,14 @@ pub struct TrackClipData {
     pub opacity: f32,
     /// Per-clip blend mode. Forwarded to `Clip::with_blend_mode`.
     pub blend_mode: avio::BlendMode,
+    /// Vignette strength percentage (`0.0` = off) and normalized centre X/Y (%).
+    pub vignette: f32,
+    pub vignette_x: f32,
+    pub vignette_y: f32,
+    /// Source video dimensions — used to convert the normalized vignette centre
+    /// to pixel `x0`/`y0`. `0` when the source has no video stream.
+    pub width: u32,
+    pub height: u32,
 }
 
 // ── EguiFrameSink ─────────────────────────────────────────────────────────────
@@ -421,7 +429,7 @@ pub fn spawn_timeline_player(
             if let Some(kind) = tc.transition {
                 c = c.with_transition(kind, tc.transition_duration);
             }
-            // Full colour grade (Eq → WB → Hue → Gamma → LUT), shared with export.
+            // Full colour grade (Eq → WB → Hue → Gamma → LUT → Vignette), shared with export.
             // The preview player applies these via avio's RealtimeComposer, so the
             // monitor matches the rendered output without any host-side re-grading.
             c = crate::export::apply_color_grade(
@@ -436,6 +444,11 @@ pub fn spawn_timeline_player(
                 tc.gamma_g,
                 tc.gamma_b,
                 tc.lut_path.as_deref(),
+                tc.vignette,
+                tc.vignette_x,
+                tc.vignette_y,
+                tc.width,
+                tc.height,
             );
             #[allow(clippy::float_cmp)]
             if tc.opacity != 1.0 {

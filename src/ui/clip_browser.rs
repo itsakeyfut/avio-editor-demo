@@ -661,6 +661,9 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
                 gamma_r: 1.0,
                 gamma_g: 1.0,
                 gamma_b: 1.0,
+                vignette: 0.0,
+                vignette_x: 50.0,
+                vignette_y: 50.0,
             });
         }
         let can_trim = clip.in_point.is_some() && clip.out_point.is_some();

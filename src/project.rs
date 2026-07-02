@@ -65,10 +65,20 @@ pub struct ProjectTimelineClip {
     pub gamma_g: f32,
     #[serde(default = "default_gamma")]
     pub gamma_b: f32,
+    #[serde(default)]
+    pub vignette: f32,
+    #[serde(default = "default_vignette_centre")]
+    pub vignette_x: f32,
+    #[serde(default = "default_vignette_centre")]
+    pub vignette_y: f32,
 }
 
 fn default_wb_temperature() -> u32 {
     crate::state::WB_NEUTRAL_TEMP
+}
+
+fn default_vignette_centre() -> f32 {
+    50.0
 }
 
 fn default_gamma() -> f32 {
@@ -219,6 +229,9 @@ fn timeline_clip_to_project(tc: &TimelineClip, clips: &[ImportedClip]) -> Projec
         gamma_r: tc.gamma_r,
         gamma_g: tc.gamma_g,
         gamma_b: tc.gamma_b,
+        vignette: tc.vignette,
+        vignette_x: tc.vignette_x,
+        vignette_y: tc.vignette_y,
     }
 }
 
@@ -257,6 +270,9 @@ fn project_to_timeline_clip(
         gamma_r: ptc.gamma_r,
         gamma_g: ptc.gamma_g,
         gamma_b: ptc.gamma_b,
+        vignette: ptc.vignette,
+        vignette_x: ptc.vignette_x,
+        vignette_y: ptc.vignette_y,
     })
 }
 
