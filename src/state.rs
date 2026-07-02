@@ -546,6 +546,13 @@ pub struct TimelineClip {
     pub gamma_g: f32,
     /// Per-channel gamma (blue). Default 1.0 (off).
     pub gamma_b: f32,
+    /// Vignette strength as a percentage (0.0–100.0). Default 0.0 (off).
+    /// Mapped to the `FilterStep::Vignette` `angle` (0..π/2) in `apply_color_grade`.
+    pub vignette: f32,
+    /// Vignette centre X as a percentage of width (0.0–100.0). Default 50.0 (centre).
+    pub vignette_x: f32,
+    /// Vignette centre Y as a percentage of height (0.0–100.0). Default 50.0 (centre).
+    pub vignette_y: f32,
 }
 
 pub struct TimelineState {

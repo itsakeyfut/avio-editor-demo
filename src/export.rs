@@ -52,6 +52,16 @@ pub struct ExportClip {
     pub gamma_r: f32,
     pub gamma_g: f32,
     pub gamma_b: f32,
+    /// Vignette strength percentage (0.0 = off). Mapped to `FilterStep::Vignette` angle.
+    pub vignette: f32,
+    /// Vignette centre X / Y percentage (50.0 = centre).
+    pub vignette_x: f32,
+    pub vignette_y: f32,
+    /// Source video dimensions — used to convert the normalized vignette centre
+    /// to the pixel `x0`/`y0` that `FilterStep::Vignette` requires. `0` when the
+    /// source has no video stream.
+    pub width: u32,
+    pub height: u32,
 }
 
 /// Send-safe snapshot of all timeline tracks, constructed on the main thread
@@ -157,6 +167,11 @@ pub fn apply_color_grade(
     gamma_g: f32,
     gamma_b: f32,
     lut_path: Option<&std::path::Path>,
+    vignette: f32,
+    vignette_x: f32,
+    vignette_y: f32,
+    width: u32,
+    height: u32,
 ) -> avio::Clip {
     let clip = if brightness != 0.0 || contrast != 1.0 || saturation != 1.0 {
         clip.with_color_correction(brightness, contrast, saturation)
@@ -187,11 +202,23 @@ pub fn apply_color_grade(
     } else {
         clip
     };
-    match lut_path {
+    let clip = match lut_path {
         Some(p) => clip.with_video_effect(avio::FilterStep::Lut3d {
             path: p.to_string_lossy().into_owned(),
         }),
         None => clip,
+    };
+    // Vignette last (final creative step). Strength 0..100 maps to angle 0..π/2;
+    // the normalized centre maps to pixels via the source dimensions. `.max(1.0)`
+    // keeps x0/y0 non-zero so avio's `x0 == 0.0 ⇒ centre` special-case is never
+    // triggered accidentally at 0%.
+    if vignette > 0.0 && width > 0 && height > 0 {
+        let angle = (vignette / 100.0) * std::f32::consts::FRAC_PI_2;
+        let x0 = ((vignette_x / 100.0) * width as f32).max(1.0);
+        let y0 = ((vignette_y / 100.0) * height as f32).max(1.0);
+        clip.with_video_effect(avio::FilterStep::Vignette { angle, x0, y0 })
+    } else {
+        clip
     }
 }
 
@@ -233,7 +260,7 @@ fn clips_to_avio(clips: Vec<ExportClip>) -> Vec<avio::Clip> {
                 Some(kind) => clip.with_transition(kind, c.transition_duration),
                 None => clip,
             };
-            // Colour grading chain (Eq → WB → Hue → Gamma → LUT). Built from the
+            // Colour grading chain (Eq → WB → Hue → Gamma → LUT → Vignette). Built from the
             // shared `apply_color_grade` so export and the preview
             // (`Clip::apply_video_effects`) apply the identical chain.
             let clip = apply_color_grade(
@@ -248,6 +275,11 @@ fn clips_to_avio(clips: Vec<ExportClip>) -> Vec<avio::Clip> {
                 c.gamma_g,
                 c.gamma_b,
                 c.lut_path.as_deref(),
+                c.vignette,
+                c.vignette_x,
+                c.vignette_y,
+                c.width,
+                c.height,
             );
             #[allow(clippy::float_cmp)]
             let clip = if c.opacity != 1.0 {
@@ -571,6 +603,11 @@ mod tests {
             gamma_g,
             gamma_b,
             lut_path,
+            0.0,  // vignette (neutral)
+            50.0, // vignette_x
+            50.0, // vignette_y
+            1920, // width (unused while vignette is neutral)
+            1080, // height
         )
         .video_effect_chain()
     }
@@ -754,5 +791,64 @@ mod tests {
         assert!(matches!(steps[2], avio::FilterStep::Hue { .. }));
         assert!(matches!(steps[3], avio::FilterStep::Gamma { .. }));
         assert!(matches!(steps[4], avio::FilterStep::Lut3d { .. }));
+    }
+
+    /// A non-zero vignette appends a `Vignette` step, mapping strength to the
+    /// `angle` (0..π/2) and the normalized centre to pixel `x0`/`y0`.
+    #[test]
+    fn vignette_step_maps_strength_and_centre() {
+        let steps = apply_color_grade(
+            avio::Clip::new("test.mp4"),
+            0.0,
+            1.0,
+            1.0,
+            WB_NEUTRAL_TEMP,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            1.0,
+            None,
+            50.0, // strength %
+            25.0, // centre X %
+            75.0, // centre Y %
+            1920,
+            1080,
+        )
+        .video_effect_chain();
+        assert_eq!(steps.len(), 1);
+        match &steps[0] {
+            avio::FilterStep::Vignette { angle, x0, y0 } => {
+                assert!((*angle - std::f32::consts::FRAC_PI_2 * 0.5).abs() < 1e-4);
+                assert!((*x0 - 480.0).abs() < 1e-3); // 0.25 * 1920
+                assert!((*y0 - 810.0).abs() < 1e-3); // 0.75 * 1080
+            }
+            other => panic!("expected Vignette, got {other:?}"),
+        }
+    }
+
+    /// Strength 0 (the default) skips the vignette step entirely.
+    #[test]
+    fn vignette_neutral_produces_no_step() {
+        let steps = apply_color_grade(
+            avio::Clip::new("test.mp4"),
+            0.0,
+            1.0,
+            1.0,
+            WB_NEUTRAL_TEMP,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            1.0,
+            None,
+            0.0,
+            50.0,
+            50.0,
+            1920,
+            1080,
+        )
+        .video_effect_chain();
+        assert!(steps.is_empty());
     }
 }

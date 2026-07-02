@@ -245,6 +245,11 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         gamma_r: tc.gamma_r,
                         gamma_g: tc.gamma_g,
                         gamma_b: tc.gamma_b,
+                        vignette: tc.vignette,
+                        vignette_x: tc.vignette_x,
+                        vignette_y: tc.vignette_y,
+                        width: src.info.primary_video().map(|v| v.width()).unwrap_or(0),
+                        height: src.info.primary_video().map(|v| v.height()).unwrap_or(0),
                     }
                 };
                 let tracks = &state.timeline.tracks;
@@ -705,6 +710,19 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 speed: tc.speed,
                 opacity: tc.opacity,
                 blend_mode: tc.blend_mode,
+                vignette: tc.vignette,
+                vignette_x: tc.vignette_x,
+                vignette_y: tc.vignette_y,
+                width: clips[tc.source_index]
+                    .info
+                    .primary_video()
+                    .map(|v| v.width())
+                    .unwrap_or(0),
+                height: clips[tc.source_index]
+                    .info
+                    .primary_video()
+                    .map(|v| v.height())
+                    .unwrap_or(0),
             };
             let tracks = &state.timeline.tracks;
             let audio_start = state.timeline.audio_track_start();
@@ -777,6 +795,19 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                             speed: tc.speed,
                             opacity: tc.opacity,
                             blend_mode: tc.blend_mode,
+                            vignette: tc.vignette,
+                            vignette_x: tc.vignette_x,
+                            vignette_y: tc.vignette_y,
+                            width: clips[tc.source_index]
+                                .info
+                                .primary_video()
+                                .map(|v| v.width())
+                                .unwrap_or(0),
+                            height: clips[tc.source_index]
+                                .info
+                                .primary_video()
+                                .map(|v| v.height())
+                                .unwrap_or(0),
                         };
                         let tracks = &state.timeline.tracks;
                         let audio_start = state.timeline.audio_track_start();
@@ -1006,6 +1037,42 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                             clip.gamma_r = 1.0;
                             clip.gamma_g = 1.0;
                             clip.gamma_b = 1.0;
+                        }
+                    });
+                    // Vignette (darkened edges) via avio Vignette. Strength 0 = off;
+                    // centre X/Y are percentages of the frame (50 = centre).
+                    ui.horizontal(|ui| {
+                        ui.label("Vignette");
+                        ui.add(
+                            egui::Slider::new(&mut clip.vignette, 0.0..=100.0).fixed_decimals(0),
+                        );
+                        ui.separator();
+                        let has_vig = clip.vignette > 0.0;
+                        ui.add_enabled(
+                            has_vig,
+                            egui::Slider::new(&mut clip.vignette_x, 0.0..=100.0)
+                                .fixed_decimals(0)
+                                .text("CX"),
+                        );
+                        ui.add_enabled(
+                            has_vig,
+                            egui::Slider::new(&mut clip.vignette_y, 0.0..=100.0)
+                                .fixed_decimals(0)
+                                .text("CY"),
+                        );
+                        ui.separator();
+                        #[allow(clippy::float_cmp)]
+                        let vig_off = clip.vignette == 0.0
+                            && clip.vignette_x == 50.0
+                            && clip.vignette_y == 50.0;
+                        if ui
+                            .add_enabled(!vig_off, egui::Button::new("Reset"))
+                            .on_hover_text("Reset vignette to neutral")
+                            .clicked()
+                        {
+                            clip.vignette = 0.0;
+                            clip.vignette_x = 50.0;
+                            clip.vignette_y = 50.0;
                         }
                     });
                     // 3D LUT (.cube) — export-only via avio Clip effect chain.
@@ -2851,6 +2918,19 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 speed: tc.speed,
                 opacity: tc.opacity,
                 blend_mode: tc.blend_mode,
+                vignette: tc.vignette,
+                vignette_x: tc.vignette_x,
+                vignette_y: tc.vignette_y,
+                width: clips[tc.source_index]
+                    .info
+                    .primary_video()
+                    .map(|v| v.width())
+                    .unwrap_or(0),
+                height: clips[tc.source_index]
+                    .info
+                    .primary_video()
+                    .map(|v| v.height())
+                    .unwrap_or(0),
             };
             let tracks = &state.timeline.tracks;
             let audio_start = state.timeline.audio_track_start();
@@ -2943,6 +3023,9 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             gamma_r: 1.0,
             gamma_g: 1.0,
             gamma_b: 1.0,
+            vignette: 0.0,
+            vignette_x: 50.0,
+            vignette_y: 50.0,
         };
         // Sorted insert so that out-of-order drops don't corrupt array order.
         let track = &mut state.timeline.tracks[track_idx].clips;
@@ -3078,6 +3161,9 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 gamma_r: state.timeline.tracks[ti].clips[ci].gamma_r,
                 gamma_g: state.timeline.tracks[ti].clips[ci].gamma_g,
                 gamma_b: state.timeline.tracks[ti].clips[ci].gamma_b,
+                vignette: state.timeline.tracks[ti].clips[ci].vignette,
+                vignette_x: state.timeline.tracks[ti].clips[ci].vignette_x,
+                vignette_y: state.timeline.tracks[ti].clips[ci].vignette_y,
             };
             state.timeline.tracks[ti].clips.insert(ci + 1, right);
         }
