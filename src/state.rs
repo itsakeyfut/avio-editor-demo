@@ -515,6 +515,34 @@ pub enum CurveChannel {
     B,
 }
 
+/// A single 3-way colour-corrector wheel (shadows / midtones / highlights).
+/// `x`/`y` are the colour offset within the wheel disk (`-1.0..=1.0`, `0` = no
+/// tint) and `luma` is the range's luminance offset (`-1.0..=1.0`, `0` = neutral).
+#[derive(Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ColorWheel {
+    pub x: f32,
+    pub y: f32,
+    pub luma: f32,
+}
+
+/// Per-clip 3-way colour corrector: lift (shadows), gamma (midtones), gain
+/// (highlights). All-zero is neutral (the `ThreeWayCC` step is then skipped).
+#[derive(Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ColorWheels {
+    pub lift: ColorWheel,
+    pub gamma: ColorWheel,
+    pub gain: ColorWheel,
+}
+
+impl ColorWheels {
+    /// `true` when every wheel is neutral (all fields `0.0`).
+    pub fn is_neutral(&self) -> bool {
+        [self.lift, self.gamma, self.gain]
+            .iter()
+            .all(|w| w.x == 0.0 && w.y == 0.0 && w.luma == 0.0)
+    }
+}
+
 #[derive(Clone, PartialEq)]
 pub struct TimelineClip {
     pub source_index: usize,
@@ -583,6 +611,8 @@ pub struct TimelineClip {
     pub vignette_y: f32,
     /// Per-clip tone curves (Luma + R/G/B). Default: all identity (empty).
     pub curves: ToneCurves,
+    /// Per-clip 3-way colour corrector (lift / gamma / gain). Default: neutral.
+    pub wheels: ColorWheels,
 }
 
 pub struct TimelineState {

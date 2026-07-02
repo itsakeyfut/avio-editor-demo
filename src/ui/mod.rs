@@ -1,4 +1,5 @@
 pub mod clip_browser;
+pub mod color_wheels;
 pub mod curve_editor;
 pub mod drain;
 pub mod monitor;

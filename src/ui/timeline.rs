@@ -251,6 +251,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         width: src.info.primary_video().map(|v| v.width()).unwrap_or(0),
                         height: src.info.primary_video().map(|v| v.height()).unwrap_or(0),
                         curves: tc.curves.clone(),
+                        wheels: tc.wheels,
                     }
                 };
                 let tracks = &state.timeline.tracks;
@@ -725,6 +726,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     .map(|v| v.height())
                     .unwrap_or(0),
                 curves: tc.curves.clone(),
+                wheels: tc.wheels,
             };
             let tracks = &state.timeline.tracks;
             let audio_start = state.timeline.audio_track_start();
@@ -811,6 +813,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                 .map(|v| v.height())
                                 .unwrap_or(0),
                             curves: tc.curves.clone(),
+                            wheels: tc.wheels,
                         };
                         let tracks = &state.timeline.tracks;
                         let audio_start = state.timeline.audio_track_start();
@@ -1083,6 +1086,12 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         .id_salt("tone_curves")
                         .show(ui, |ui| {
                             super::curve_editor::tone_curve_editor(ui, &mut clip.curves);
+                        });
+                    // 3-way colour corrector (lift/gamma/gain) via avio ThreeWayCC.
+                    egui::CollapsingHeader::new("Color Wheels")
+                        .id_salt("color_wheels")
+                        .show(ui, |ui| {
+                            super::color_wheels::color_wheels_editor(ui, &mut clip.wheels);
                         });
                     // 3D LUT (.cube) — export-only via avio Clip effect chain.
                     ui.horizontal(|ui| {
@@ -2941,6 +2950,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     .map(|v| v.height())
                     .unwrap_or(0),
                 curves: tc.curves.clone(),
+                wheels: tc.wheels,
             };
             let tracks = &state.timeline.tracks;
             let audio_start = state.timeline.audio_track_start();
@@ -3037,6 +3047,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             vignette_x: 50.0,
             vignette_y: 50.0,
             curves: state::ToneCurves::default(),
+            wheels: state::ColorWheels::default(),
         };
         // Sorted insert so that out-of-order drops don't corrupt array order.
         let track = &mut state.timeline.tracks[track_idx].clips;
@@ -3176,6 +3187,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 vignette_x: state.timeline.tracks[ti].clips[ci].vignette_x,
                 vignette_y: state.timeline.tracks[ti].clips[ci].vignette_y,
                 curves: state.timeline.tracks[ti].clips[ci].curves.clone(),
+                wheels: state.timeline.tracks[ti].clips[ci].wheels,
             };
             state.timeline.tracks[ti].clips.insert(ci + 1, right);
         }

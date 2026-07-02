@@ -55,6 +55,8 @@ pub struct TrackClipData {
     pub height: u32,
     /// Per-clip tone curves (Luma + R/G/B).
     pub curves: crate::state::ToneCurves,
+    /// Per-clip 3-way colour corrector (lift / gamma / gain).
+    pub wheels: crate::state::ColorWheels,
 }
 
 // ── EguiFrameSink ─────────────────────────────────────────────────────────────
@@ -431,7 +433,7 @@ pub fn spawn_timeline_player(
             if let Some(kind) = tc.transition {
                 c = c.with_transition(kind, tc.transition_duration);
             }
-            // Full colour grade (Eq → WB → Hue → Gamma → Curves → LUT → Vignette), shared with export.
+            // Full colour grade (Eq → WB → Hue → Gamma → ThreeWayCC → Curves → LUT → Vignette), shared with export.
             // The preview player applies these via avio's RealtimeComposer, so the
             // monitor matches the rendered output without any host-side re-grading.
             c = crate::export::apply_color_grade(
@@ -445,6 +447,7 @@ pub fn spawn_timeline_player(
                 tc.gamma_r,
                 tc.gamma_g,
                 tc.gamma_b,
+                &tc.wheels,
                 &tc.curves,
                 tc.lut_path.as_deref(),
                 tc.vignette,
