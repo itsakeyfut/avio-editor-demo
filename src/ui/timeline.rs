@@ -250,6 +250,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         vignette_y: tc.vignette_y,
                         width: src.info.primary_video().map(|v| v.width()).unwrap_or(0),
                         height: src.info.primary_video().map(|v| v.height()).unwrap_or(0),
+                        curves: tc.curves.clone(),
                     }
                 };
                 let tracks = &state.timeline.tracks;
@@ -723,6 +724,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     .primary_video()
                     .map(|v| v.height())
                     .unwrap_or(0),
+                curves: tc.curves.clone(),
             };
             let tracks = &state.timeline.tracks;
             let audio_start = state.timeline.audio_track_start();
@@ -808,6 +810,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                 .primary_video()
                                 .map(|v| v.height())
                                 .unwrap_or(0),
+                            curves: tc.curves.clone(),
                         };
                         let tracks = &state.timeline.tracks;
                         let audio_start = state.timeline.audio_track_start();
@@ -1075,6 +1078,12 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                             clip.vignette_y = 50.0;
                         }
                     });
+                    // Tone curves (Luma + R/G/B) via avio Curves — draggable editor.
+                    egui::CollapsingHeader::new("Tone Curves")
+                        .id_salt("tone_curves")
+                        .show(ui, |ui| {
+                            super::curve_editor::tone_curve_editor(ui, &mut clip.curves);
+                        });
                     // 3D LUT (.cube) — export-only via avio Clip effect chain.
                     ui.horizontal(|ui| {
                         ui.label("LUT (.cube)");
@@ -2931,6 +2940,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     .primary_video()
                     .map(|v| v.height())
                     .unwrap_or(0),
+                curves: tc.curves.clone(),
             };
             let tracks = &state.timeline.tracks;
             let audio_start = state.timeline.audio_track_start();
@@ -3026,6 +3036,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             vignette: 0.0,
             vignette_x: 50.0,
             vignette_y: 50.0,
+            curves: state::ToneCurves::default(),
         };
         // Sorted insert so that out-of-order drops don't corrupt array order.
         let track = &mut state.timeline.tracks[track_idx].clips;
@@ -3164,6 +3175,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 vignette: state.timeline.tracks[ti].clips[ci].vignette,
                 vignette_x: state.timeline.tracks[ti].clips[ci].vignette_x,
                 vignette_y: state.timeline.tracks[ti].clips[ci].vignette_y,
+                curves: state.timeline.tracks[ti].clips[ci].curves.clone(),
             };
             state.timeline.tracks[ti].clips.insert(ci + 1, right);
         }

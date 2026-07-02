@@ -71,6 +71,8 @@ pub struct ProjectTimelineClip {
     pub vignette_x: f32,
     #[serde(default = "default_vignette_centre")]
     pub vignette_y: f32,
+    #[serde(default)]
+    pub curves: crate::state::ToneCurves,
 }
 
 fn default_wb_temperature() -> u32 {
@@ -232,6 +234,7 @@ fn timeline_clip_to_project(tc: &TimelineClip, clips: &[ImportedClip]) -> Projec
         vignette: tc.vignette,
         vignette_x: tc.vignette_x,
         vignette_y: tc.vignette_y,
+        curves: tc.curves.clone(),
     }
 }
 
@@ -273,6 +276,7 @@ fn project_to_timeline_clip(
         vignette: ptc.vignette,
         vignette_x: ptc.vignette_x,
         vignette_y: ptc.vignette_y,
+        curves: ptc.curves.clone(),
     })
 }
 

@@ -62,6 +62,8 @@ pub struct ExportClip {
     /// source has no video stream.
     pub width: u32,
     pub height: u32,
+    /// Per-clip tone curves (Luma + R/G/B). Attached via `FilterStep::Curves`.
+    pub curves: crate::state::ToneCurves,
 }
 
 /// Send-safe snapshot of all timeline tracks, constructed on the main thread
@@ -147,7 +149,7 @@ pub fn spawn_queue_job(job: &mut QueueJob) -> bool {
 }
 
 /// Attaches a clip's colour grade to `clip` in canonical order
-/// (`Eq → WhiteBalance → Hue → Gamma → Lut3d`), skipping neutral steps.
+/// (`Eq → WhiteBalance → Hue → Gamma → Curves → Lut3d → Vignette`), skipping neutral steps.
 ///
 /// Brightness/contrast/saturation go through `Clip::with_color_correction` (the
 /// native `eq` path that `Clip::video_effect_chain` emits); the rest are attached
@@ -166,6 +168,7 @@ pub fn apply_color_grade(
     gamma_r: f32,
     gamma_g: f32,
     gamma_b: f32,
+    curves: &crate::state::ToneCurves,
     lut_path: Option<&std::path::Path>,
     vignette: f32,
     vignette_x: f32,
@@ -201,6 +204,16 @@ pub fn apply_color_grade(
         })
     } else {
         clip
+    };
+    let clip = if curves.is_neutral() {
+        clip
+    } else {
+        clip.with_video_effect(avio::FilterStep::Curves {
+            master: curves.master.clone(),
+            r: curves.r.clone(),
+            g: curves.g.clone(),
+            b: curves.b.clone(),
+        })
     };
     let clip = match lut_path {
         Some(p) => clip.with_video_effect(avio::FilterStep::Lut3d {
@@ -260,7 +273,7 @@ fn clips_to_avio(clips: Vec<ExportClip>) -> Vec<avio::Clip> {
                 Some(kind) => clip.with_transition(kind, c.transition_duration),
                 None => clip,
             };
-            // Colour grading chain (Eq → WB → Hue → Gamma → LUT → Vignette). Built from the
+            // Colour grading chain (Eq → WB → Hue → Gamma → Curves → LUT → Vignette). Built from the
             // shared `apply_color_grade` so export and the preview
             // (`Clip::apply_video_effects`) apply the identical chain.
             let clip = apply_color_grade(
@@ -274,6 +287,7 @@ fn clips_to_avio(clips: Vec<ExportClip>) -> Vec<avio::Clip> {
                 c.gamma_r,
                 c.gamma_g,
                 c.gamma_b,
+                &c.curves,
                 c.lut_path.as_deref(),
                 c.vignette,
                 c.vignette_x,
@@ -602,6 +616,7 @@ mod tests {
             gamma_r,
             gamma_g,
             gamma_b,
+            &crate::state::ToneCurves::default(), // curves (neutral)
             lut_path,
             0.0,  // vignette (neutral)
             50.0, // vignette_x
@@ -808,6 +823,7 @@ mod tests {
             1.0,
             1.0,
             1.0,
+            &crate::state::ToneCurves::default(),
             None,
             50.0, // strength %
             25.0, // centre X %
@@ -841,6 +857,7 @@ mod tests {
             1.0,
             1.0,
             1.0,
+            &crate::state::ToneCurves::default(),
             None,
             0.0,
             50.0,
@@ -850,5 +867,47 @@ mod tests {
         )
         .video_effect_chain();
         assert!(steps.is_empty());
+    }
+
+    /// Non-empty tone curves append a `Curves` step carrying the per-channel
+    /// control points; empty channels are omitted.
+    #[test]
+    fn curves_step_carries_control_points() {
+        let curves = crate::state::ToneCurves {
+            master: vec![(0.0, 0.0), (0.5, 0.6), (1.0, 1.0)],
+            r: vec![(0.0, 0.1), (1.0, 1.0)],
+            g: Vec::new(),
+            b: Vec::new(),
+        };
+        let steps = apply_color_grade(
+            avio::Clip::new("test.mp4"),
+            0.0,
+            1.0,
+            1.0,
+            WB_NEUTRAL_TEMP,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            1.0,
+            &curves,
+            None,
+            0.0,
+            50.0,
+            50.0,
+            1920,
+            1080,
+        )
+        .video_effect_chain();
+        assert_eq!(steps.len(), 1);
+        match &steps[0] {
+            avio::FilterStep::Curves { master, r, g, b } => {
+                assert_eq!(master.len(), 3);
+                assert_eq!(r.len(), 2);
+                assert!(g.is_empty());
+                assert!(b.is_empty());
+            }
+            other => panic!("expected Curves, got {other:?}"),
+        }
     }
 }

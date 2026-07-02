@@ -487,6 +487,34 @@ pub struct Track {
     pub soloed: bool,
 }
 
+/// Per-clip tone curves — one control-point list per channel. Each list is a set
+/// of `(x, y)` points in `0.0..=1.0`. An empty list means that channel is
+/// identity (it is omitted from the `curves` filter). `master` is the Luma curve.
+#[derive(Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ToneCurves {
+    pub master: Vec<(f32, f32)>,
+    pub r: Vec<(f32, f32)>,
+    pub g: Vec<(f32, f32)>,
+    pub b: Vec<(f32, f32)>,
+}
+
+impl ToneCurves {
+    /// `true` when every channel is identity (empty) — the `Curves` step is then
+    /// skipped so an untouched clip renders bit-identical.
+    pub fn is_neutral(&self) -> bool {
+        self.master.is_empty() && self.r.is_empty() && self.g.is_empty() && self.b.is_empty()
+    }
+}
+
+/// Which tone-curve channel the editor is currently editing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CurveChannel {
+    Luma,
+    R,
+    G,
+    B,
+}
+
 #[derive(Clone, PartialEq)]
 pub struct TimelineClip {
     pub source_index: usize,
@@ -553,6 +581,8 @@ pub struct TimelineClip {
     pub vignette_x: f32,
     /// Vignette centre Y as a percentage of height (0.0–100.0). Default 50.0 (centre).
     pub vignette_y: f32,
+    /// Per-clip tone curves (Luma + R/G/B). Default: all identity (empty).
+    pub curves: ToneCurves,
 }
 
 pub struct TimelineState {
