@@ -543,6 +543,39 @@ impl ColorWheels {
     }
 }
 
+/// Per-clip stackable video effects. Each field is a single intensity (`0.0` =
+/// off); non-zero effects are attached in order via avio `FilterStep`s.
+#[derive(Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct VideoEffects {
+    /// Gaussian blur radius (`GBlur` sigma, 0–10).
+    pub blur: f32,
+    /// Unsharp-mask sharpen amount (`Unsharp` luma strength, 0–1.5).
+    pub sharpen: f32,
+    /// Denoise strength (0–1) mapped to `Hqdn3d` spatial/temporal parameters.
+    pub denoise: f32,
+    /// Film-grain strength (`FilmGrain` luma strength, 0–100).
+    pub grain: f32,
+    /// Glow intensity (`Glow` intensity, 0–1).
+    pub glow: f32,
+    /// Motion-blur shutter angle in degrees (`MotionBlur`, 0–360).
+    pub motion_blur: f32,
+    /// Chromatic-aberration horizontal shift in pixels (`ChromaticAberration`, 0–10).
+    pub chromatic_aberration: f32,
+}
+
+impl VideoEffects {
+    /// `true` when no effect is active (every field `0.0`).
+    pub fn is_neutral(&self) -> bool {
+        self.blur == 0.0
+            && self.sharpen == 0.0
+            && self.denoise == 0.0
+            && self.grain == 0.0
+            && self.glow == 0.0
+            && self.motion_blur == 0.0
+            && self.chromatic_aberration == 0.0
+    }
+}
+
 #[derive(Clone, PartialEq)]
 pub struct TimelineClip {
     pub source_index: usize,
@@ -613,6 +646,8 @@ pub struct TimelineClip {
     pub curves: ToneCurves,
     /// Per-clip 3-way colour corrector (lift / gamma / gain). Default: neutral.
     pub wheels: ColorWheels,
+    /// Per-clip stackable video effects. Default: all off.
+    pub video_effects: VideoEffects,
 }
 
 pub struct TimelineState {

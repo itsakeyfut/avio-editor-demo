@@ -252,6 +252,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         height: src.info.primary_video().map(|v| v.height()).unwrap_or(0),
                         curves: tc.curves.clone(),
                         wheels: tc.wheels,
+                        video_effects: tc.video_effects,
                     }
                 };
                 let tracks = &state.timeline.tracks;
@@ -727,6 +728,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     .unwrap_or(0),
                 curves: tc.curves.clone(),
                 wheels: tc.wheels,
+                video_effects: tc.video_effects,
             };
             let tracks = &state.timeline.tracks;
             let audio_start = state.timeline.audio_track_start();
@@ -814,6 +816,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                 .unwrap_or(0),
                             curves: tc.curves.clone(),
                             wheels: tc.wheels,
+                            video_effects: tc.video_effects,
                         };
                         let tracks = &state.timeline.tracks;
                         let audio_start = state.timeline.audio_track_start();
@@ -1092,6 +1095,46 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         .id_salt("color_wheels")
                         .show(ui, |ui| {
                             super::color_wheels::color_wheels_editor(ui, &mut clip.wheels);
+                        });
+                    // Stackable video effects via avio FilterSteps (blur, sharpen, …).
+                    egui::CollapsingHeader::new("Video Effects")
+                        .id_salt("video_effects")
+                        .show(ui, |ui| {
+                            let fx = &mut clip.video_effects;
+                            // Temporal filters (tblend / hqdn3d) need consecutive
+                            // frames; the realtime preview pushes a single frame, so
+                            // they only show during playback and on export.
+                            let temporal_note = "Temporal effect — shows during playback and on export, not on a paused frame.";
+                            ui.add(egui::Slider::new(&mut fx.blur, 0.0..=10.0).text("Blur"));
+                            ui.add(egui::Slider::new(&mut fx.sharpen, 0.0..=1.5).text("Sharpen"));
+                            ui.add(egui::Slider::new(&mut fx.denoise, 0.0..=1.0).text("Denoise"))
+                                .on_hover_text(temporal_note);
+                            ui.add(egui::Slider::new(&mut fx.grain, 0.0..=100.0).text("Grain"));
+                            ui.add(egui::Slider::new(&mut fx.glow, 0.0..=1.0).text("Glow"));
+                            ui.add(
+                                egui::Slider::new(&mut fx.motion_blur, 0.0..=360.0)
+                                    .text("Motion Blur"),
+                            )
+                            .on_hover_text(temporal_note);
+                            ui.add(
+                                egui::Slider::new(&mut fx.chromatic_aberration, 0.0..=10.0)
+                                    .text("Chromatic Aberration"),
+                            );
+                            ui.label(
+                                egui::RichText::new(
+                                    "Denoise / Motion Blur preview during playback & export",
+                                )
+                                .weak()
+                                .small(),
+                            );
+                            let off = fx.is_neutral();
+                            if ui
+                                .add_enabled(!off, egui::Button::new("Reset"))
+                                .on_hover_text("Reset all video effects")
+                                .clicked()
+                            {
+                                *fx = state::VideoEffects::default();
+                            }
                         });
                     // 3D LUT (.cube) — export-only via avio Clip effect chain.
                     ui.horizontal(|ui| {
@@ -2951,6 +2994,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     .unwrap_or(0),
                 curves: tc.curves.clone(),
                 wheels: tc.wheels,
+                video_effects: tc.video_effects,
             };
             let tracks = &state.timeline.tracks;
             let audio_start = state.timeline.audio_track_start();
@@ -3048,6 +3092,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             vignette_y: 50.0,
             curves: state::ToneCurves::default(),
             wheels: state::ColorWheels::default(),
+            video_effects: state::VideoEffects::default(),
         };
         // Sorted insert so that out-of-order drops don't corrupt array order.
         let track = &mut state.timeline.tracks[track_idx].clips;
@@ -3188,6 +3233,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 vignette_y: state.timeline.tracks[ti].clips[ci].vignette_y,
                 curves: state.timeline.tracks[ti].clips[ci].curves.clone(),
                 wheels: state.timeline.tracks[ti].clips[ci].wheels,
+                video_effects: state.timeline.tracks[ti].clips[ci].video_effects,
             };
             state.timeline.tracks[ti].clips.insert(ci + 1, right);
         }

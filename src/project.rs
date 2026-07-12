@@ -75,6 +75,8 @@ pub struct ProjectTimelineClip {
     pub curves: crate::state::ToneCurves,
     #[serde(default)]
     pub wheels: crate::state::ColorWheels,
+    #[serde(default)]
+    pub video_effects: crate::state::VideoEffects,
 }
 
 fn default_wb_temperature() -> u32 {
@@ -238,6 +240,7 @@ fn timeline_clip_to_project(tc: &TimelineClip, clips: &[ImportedClip]) -> Projec
         vignette_y: tc.vignette_y,
         curves: tc.curves.clone(),
         wheels: tc.wheels,
+        video_effects: tc.video_effects,
     }
 }
 
@@ -281,6 +284,7 @@ fn project_to_timeline_clip(
         vignette_y: ptc.vignette_y,
         curves: ptc.curves.clone(),
         wheels: ptc.wheels,
+        video_effects: ptc.video_effects,
     })
 }
 

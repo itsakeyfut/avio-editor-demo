@@ -66,6 +66,8 @@ pub struct ExportClip {
     pub curves: crate::state::ToneCurves,
     /// Per-clip 3-way colour corrector. Attached via `FilterStep::ThreeWayCC`.
     pub wheels: crate::state::ColorWheels,
+    /// Per-clip stackable video effects (blur, sharpen, denoise, …).
+    pub video_effects: crate::state::VideoEffects,
 }
 
 /// Send-safe snapshot of all timeline tracks, constructed on the main thread
@@ -269,6 +271,68 @@ pub fn apply_color_grade(
     }
 }
 
+/// Attaches a clip's stackable video effects, in order
+/// (`Blur → Sharpen → Denoise → Grain → Glow → MotionBlur → ChromaticAberration`),
+/// skipping any whose intensity is `0.0`. Applied after [`apply_color_grade`] so
+/// effects act on the graded image. Shared by export and the timeline preview.
+#[allow(clippy::float_cmp)]
+pub fn apply_video_effects(clip: avio::Clip, fx: &crate::state::VideoEffects) -> avio::Clip {
+    let clip = if fx.blur > 0.0 {
+        clip.with_video_effect(avio::FilterStep::GBlur { sigma: fx.blur })
+    } else {
+        clip
+    };
+    let clip = if fx.sharpen > 0.0 {
+        clip.with_video_effect(avio::FilterStep::Unsharp {
+            luma_strength: fx.sharpen,
+            chroma_strength: fx.sharpen * 0.5,
+        })
+    } else {
+        clip
+    };
+    let clip = if fx.denoise > 0.0 {
+        clip.with_video_effect(avio::FilterStep::Hqdn3d {
+            luma_spatial: fx.denoise * 8.0,
+            chroma_spatial: fx.denoise * 6.0,
+            luma_tmp: fx.denoise * 6.0,
+            chroma_tmp: fx.denoise * 4.5,
+        })
+    } else {
+        clip
+    };
+    let clip = if fx.grain > 0.0 {
+        clip.with_video_effect(avio::FilterStep::FilmGrain {
+            luma_strength: fx.grain,
+            chroma_strength: fx.grain * 0.5,
+        })
+    } else {
+        clip
+    };
+    let clip = if fx.glow > 0.0 {
+        clip.with_video_effect(avio::FilterStep::Glow {
+            threshold: 0.6,
+            radius: 8.0,
+            intensity: fx.glow,
+        })
+    } else {
+        clip
+    };
+    let clip = if fx.motion_blur > 0.0 {
+        clip.with_video_effect(avio::FilterStep::MotionBlur {
+            shutter_angle_degrees: fx.motion_blur,
+            sub_frames: 8,
+        })
+    } else {
+        clip
+    };
+    if fx.chromatic_aberration > 0.0 {
+        let n = fx.chromatic_aberration.round() as i32;
+        clip.with_video_effect(avio::FilterStep::ChromaticAberration { rh: n, bh: -n })
+    } else {
+        clip
+    }
+}
+
 fn clips_to_avio(clips: Vec<ExportClip>) -> Vec<avio::Clip> {
     clips
         .into_iter()
@@ -330,6 +394,8 @@ fn clips_to_avio(clips: Vec<ExportClip>) -> Vec<avio::Clip> {
                 c.width,
                 c.height,
             );
+            // Stackable video effects, applied on top of the grade.
+            let clip = apply_video_effects(clip, &c.video_effects);
             #[allow(clippy::float_cmp)]
             let clip = if c.opacity != 1.0 {
                 clip.with_opacity(c.opacity)
@@ -987,6 +1053,38 @@ mod tests {
                 assert!(gamma.r > 0.0 && gamma.g > 0.0 && gamma.b > 0.0);
             }
             other => panic!("expected ThreeWayCC, got {other:?}"),
+        }
+    }
+
+    /// Active video effects attach one `FilterStep` each, in order; neutral is a
+    /// no-op.
+    #[test]
+    fn video_effects_attach_steps_in_order() {
+        use super::apply_video_effects;
+
+        let neutral = crate::state::VideoEffects::default();
+        let steps = apply_video_effects(avio::Clip::new("test.mp4"), &neutral).video_effect_chain();
+        assert!(steps.is_empty());
+
+        let fx = crate::state::VideoEffects {
+            blur: 4.0,
+            sharpen: 0.0,
+            denoise: 0.0,
+            grain: 0.0,
+            glow: 0.5,
+            motion_blur: 0.0,
+            chromatic_aberration: 3.0,
+        };
+        let steps = apply_video_effects(avio::Clip::new("test.mp4"), &fx).video_effect_chain();
+        assert_eq!(steps.len(), 3);
+        assert!(matches!(steps[0], avio::FilterStep::GBlur { .. }));
+        assert!(matches!(steps[1], avio::FilterStep::Glow { .. }));
+        match &steps[2] {
+            avio::FilterStep::ChromaticAberration { rh, bh } => {
+                assert_eq!(*rh, 3);
+                assert_eq!(*bh, -3);
+            }
+            other => panic!("expected ChromaticAberration, got {other:?}"),
         }
     }
 }
