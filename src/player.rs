@@ -57,6 +57,8 @@ pub struct TrackClipData {
     pub curves: crate::state::ToneCurves,
     /// Per-clip 3-way colour corrector (lift / gamma / gain).
     pub wheels: crate::state::ColorWheels,
+    /// Per-clip stackable video effects.
+    pub video_effects: crate::state::VideoEffects,
 }
 
 // ── EguiFrameSink ─────────────────────────────────────────────────────────────
@@ -456,6 +458,8 @@ pub fn spawn_timeline_player(
                 tc.width,
                 tc.height,
             );
+            // Stackable video effects, on top of the grade (matches export).
+            c = crate::export::apply_video_effects(c, &tc.video_effects);
             #[allow(clippy::float_cmp)]
             if tc.opacity != 1.0 {
                 c = c.with_opacity(tc.opacity);
