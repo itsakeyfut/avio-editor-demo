@@ -173,6 +173,392 @@ fn snap_clip_start(
     pos
 }
 
+/// Renders the clip / title inspector (Clip Properties, Title Properties).
+/// Shown in the right side panel; empty when nothing is selected.
+pub fn show_inspector(state: &mut state::AppState, ui: &mut egui::Ui) {
+    ui.heading("Inspector");
+    if state.timeline_selected.is_none() && state.selected_title_clip.is_none() {
+        ui.weak("Select a clip or title on the timeline to edit its properties.");
+        return;
+    }
+    // Narrower sliders so multi-control rows wrap to fit a side panel of any width
+    // (otherwise the wide rows fix the panel to the content width and defeat resize).
+    ui.spacing_mut().slider_width = 120.0;
+    // ── Clip Properties panel (video tracks only; shown when a clip is selected) ────
+    if let Some((ti, ci)) = state.timeline_selected
+        && ti < state.timeline.audio_track_start()
+    {
+        let src_name = state
+            .timeline
+            .tracks
+            .get(ti)
+            .and_then(|t| t.clips.get(ci))
+            .and_then(|c| state.clips.get(c.source_index))
+            .and_then(|s| s.path.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("(clip)")
+            .to_owned();
+        if let Some(clip) = state
+            .timeline
+            .tracks
+            .get_mut(ti)
+            .and_then(|t| t.clips.get_mut(ci))
+        {
+            egui::CollapsingHeader::new(format!("Clip Properties — {src_name}"))
+                .id_salt("clip_properties")
+                .default_open(true)
+                .show(ui, |ui| {
+                    egui::CollapsingHeader::new("Transform")
+                        .id_salt("clip_transform")
+                        .default_open(true)
+                        .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Speed");
+                        let mut speed_pct = clip.speed * 100.0;
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut speed_pct, 10.0..=400.0)
+                                    .suffix(" %")
+                                    .fixed_decimals(0),
+                            )
+                            .changed()
+                        {
+                            clip.speed = (speed_pct / 100.0).clamp(0.1, 4.0);
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Opacity");
+                        let mut opacity_pct = clip.opacity * 100.0;
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut opacity_pct, 0.0..=100.0)
+                                    .suffix(" %")
+                                    .fixed_decimals(0),
+                            )
+                            .changed()
+                        {
+                            clip.opacity = (opacity_pct / 100.0).clamp(0.0, 1.0);
+                        }
+                    });
+                    // Blend mode is only meaningful for overlay (V2+) clips.
+                    if ti >= 1 {
+                        ui.horizontal(|ui| {
+                            ui.label("Blend");
+                            egui::ComboBox::from_id_salt("clip_blend_mode")
+                                .selected_text(blend_mode_label(clip.blend_mode))
+                                .show_ui(ui, |ui| {
+                                    for mode in [
+                                        avio::BlendMode::Normal,
+                                        avio::BlendMode::Multiply,
+                                        avio::BlendMode::Screen,
+                                        avio::BlendMode::Overlay,
+                                    ] {
+                                        ui.selectable_value(
+                                            &mut clip.blend_mode,
+                                            mode,
+                                            blend_mode_label(mode),
+                                        );
+                                    }
+                                });
+                        });
+                    }
+                        });
+                    egui::CollapsingHeader::new("Color Grading")
+                        .id_salt("clip_color_grading")
+                        .default_open(true)
+                        .show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Brightness");
+                        ui.add(
+                            egui::Slider::new(&mut clip.brightness, -1.0..=1.0)
+                                .fixed_decimals(2),
+                        );
+                        ui.separator();
+                        ui.label("Contrast");
+                        ui.add(
+                            egui::Slider::new(&mut clip.contrast, 0.0..=3.0).fixed_decimals(2),
+                        );
+                        ui.separator();
+                        ui.label("Saturation");
+                        ui.add(
+                            egui::Slider::new(&mut clip.saturation, 0.0..=3.0).fixed_decimals(2),
+                        );
+                        ui.separator();
+                        #[allow(clippy::float_cmp)]
+                        let is_neutral =
+                            clip.brightness == 0.0 && clip.contrast == 1.0 && clip.saturation == 1.0;
+                        if ui
+                            .add_enabled(!is_neutral, egui::Button::new("Reset"))
+                            .on_hover_text("Reset brightness / contrast / saturation to defaults")
+                            .clicked()
+                        {
+                            clip.brightness = 0.0;
+                            clip.contrast = 1.0;
+                            clip.saturation = 1.0;
+                        }
+                    });
+                    // White balance — temperature (Kelvin) + tint, via avio WhiteBalance.
+                    // Labels precede their sliders (matches the brightness row above).
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("White Balance — Temp K");
+                        ui.add(egui::Slider::new(&mut clip.wb_temperature, 2000..=12000));
+                        ui.separator();
+                        ui.label("Tint");
+                        ui.add(
+                            egui::Slider::new(&mut clip.wb_tint, -0.5..=0.5).fixed_decimals(2),
+                        );
+                        ui.separator();
+                        #[allow(clippy::float_cmp)]
+                        let wb_off =
+                            clip.wb_temperature == state::WB_NEUTRAL_TEMP && clip.wb_tint == 0.0;
+                        if ui
+                            .add_enabled(!wb_off, egui::Button::new("Reset"))
+                            .on_hover_text("Reset white balance to neutral")
+                            .clicked()
+                        {
+                            clip.wb_temperature = state::WB_NEUTRAL_TEMP;
+                            clip.wb_tint = 0.0;
+                        }
+                    });
+                    // Hue rotation + per-channel gamma, via avio Hue / Gamma.
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Hue °");
+                        ui.add(
+                            egui::Slider::new(&mut clip.hue_degrees, -180.0..=180.0)
+                                .fixed_decimals(0),
+                        );
+                        ui.separator();
+                        ui.label("Gamma R");
+                        ui.add(egui::Slider::new(&mut clip.gamma_r, 0.1..=3.0).fixed_decimals(2));
+                        ui.label("G");
+                        ui.add(egui::Slider::new(&mut clip.gamma_g, 0.1..=3.0).fixed_decimals(2));
+                        ui.label("B");
+                        ui.add(egui::Slider::new(&mut clip.gamma_b, 0.1..=3.0).fixed_decimals(2));
+                        ui.separator();
+                        #[allow(clippy::float_cmp)]
+                        let hsl_off = clip.hue_degrees == 0.0
+                            && clip.gamma_r == 1.0
+                            && clip.gamma_g == 1.0
+                            && clip.gamma_b == 1.0;
+                        if ui
+                            .add_enabled(!hsl_off, egui::Button::new("Reset"))
+                            .on_hover_text("Reset hue and gamma to neutral")
+                            .clicked()
+                        {
+                            clip.hue_degrees = 0.0;
+                            clip.gamma_r = 1.0;
+                            clip.gamma_g = 1.0;
+                            clip.gamma_b = 1.0;
+                        }
+                    });
+                    // Vignette (darkened edges) via avio Vignette. Strength 0 = off;
+                    // centre X/Y are percentages of the frame (50 = centre).
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Vignette");
+                        ui.add(
+                            egui::Slider::new(&mut clip.vignette, 0.0..=100.0).fixed_decimals(0),
+                        );
+                        ui.separator();
+                        let has_vig = clip.vignette > 0.0;
+                        ui.add_enabled(
+                            has_vig,
+                            egui::Slider::new(&mut clip.vignette_x, 0.0..=100.0)
+                                .fixed_decimals(0)
+                                .text("CX"),
+                        );
+                        ui.add_enabled(
+                            has_vig,
+                            egui::Slider::new(&mut clip.vignette_y, 0.0..=100.0)
+                                .fixed_decimals(0)
+                                .text("CY"),
+                        );
+                        ui.separator();
+                        #[allow(clippy::float_cmp)]
+                        let vig_off = clip.vignette == 0.0
+                            && clip.vignette_x == 50.0
+                            && clip.vignette_y == 50.0;
+                        if ui
+                            .add_enabled(!vig_off, egui::Button::new("Reset"))
+                            .on_hover_text("Reset vignette to neutral")
+                            .clicked()
+                        {
+                            clip.vignette = 0.0;
+                            clip.vignette_x = 50.0;
+                            clip.vignette_y = 50.0;
+                        }
+                    });
+                        });
+                    // Tone curves (Luma + R/G/B) via avio Curves — draggable editor.
+                    egui::CollapsingHeader::new("Tone Curves")
+                        .id_salt("tone_curves")
+                        .show(ui, |ui| {
+                            super::curve_editor::tone_curve_editor(ui, &mut clip.curves);
+                        });
+                    // 3-way colour corrector (lift/gamma/gain) via avio ThreeWayCC.
+                    egui::CollapsingHeader::new("Color Wheels")
+                        .id_salt("color_wheels")
+                        .show(ui, |ui| {
+                            super::color_wheels::color_wheels_editor(ui, &mut clip.wheels);
+                        });
+                    // Stackable video effects via avio FilterSteps (blur, sharpen, …).
+                    egui::CollapsingHeader::new("Video Effects")
+                        .id_salt("video_effects")
+                        .show(ui, |ui| {
+                            let fx = &mut clip.video_effects;
+                            // Temporal filters (tblend / hqdn3d) need consecutive
+                            // frames; the realtime preview pushes a single frame, so
+                            // they only show during playback and on export.
+                            let temporal_note = "Temporal effect — shows during playback and on export, not on a paused frame.";
+                            ui.add(egui::Slider::new(&mut fx.blur, 0.0..=10.0).text("Blur"));
+                            ui.add(egui::Slider::new(&mut fx.sharpen, 0.0..=1.5).text("Sharpen"));
+                            ui.add(egui::Slider::new(&mut fx.denoise, 0.0..=1.0).text("Denoise"))
+                                .on_hover_text(temporal_note);
+                            ui.add(egui::Slider::new(&mut fx.grain, 0.0..=100.0).text("Grain"));
+                            ui.add(egui::Slider::new(&mut fx.glow, 0.0..=1.0).text("Glow"));
+                            ui.add(
+                                egui::Slider::new(&mut fx.motion_blur, 0.0..=360.0)
+                                    .text("Motion Blur"),
+                            )
+                            .on_hover_text(temporal_note);
+                            ui.add(
+                                egui::Slider::new(&mut fx.chromatic_aberration, 0.0..=10.0)
+                                    .text("Chromatic Aberration"),
+                            );
+                            ui.label(
+                                egui::RichText::new(
+                                    "Denoise / Motion Blur preview during playback & export",
+                                )
+                                .weak()
+                                .small(),
+                            );
+                            let off = fx.is_neutral();
+                            if ui
+                                .add_enabled(!off, egui::Button::new("Reset"))
+                                .on_hover_text("Reset all video effects")
+                                .clicked()
+                            {
+                                *fx = state::VideoEffects::default();
+                            }
+                        });
+                    // 3D LUT (.cube) — export-only via avio Clip effect chain.
+                    ui.horizontal(|ui| {
+                        ui.label("LUT (.cube)");
+                        if ui.button("Load…").clicked()
+                            && let Some(path) = rfd::FileDialog::new()
+                                .add_filter("Cube LUT", &["cube"])
+                                .pick_file()
+                        {
+                            clip.lut_path = Some(path);
+                        }
+                        if clip.lut_path.is_some() && ui.button("Clear").clicked() {
+                            clip.lut_path = None;
+                        }
+                        if let Some(p) = &clip.lut_path {
+                            let name = p
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default();
+                            ui.weak(name);
+                        }
+                    });
+                    egui::CollapsingHeader::new("Notes")
+                        .id_salt("clip_properties_notes")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            ui.weak(
+                                "Grade, LUT, colour wheels, tone curves, and video effects apply in both the preview and the export via the avio compositor. Temporal video effects (Motion Blur and the temporal part of Denoise) show during playback and on export, but not on a paused frame (docs/issue66.md). Speed changes audio pitch proportionally in the preview — no pitch correction (docs/issue42.md).",
+                            );
+                        });
+                });
+        }
+    }
+
+    // ── Title Editor ──────────────────────────────────────────────────────────
+    if let Some(tci) = state.selected_title_clip
+        && let Some(tc) = state.timeline.title_clips.get_mut(tci)
+    {
+        egui::CollapsingHeader::new("Title Properties")
+            .default_open(true)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Text");
+                    ui.text_edit_multiline(&mut tc.text);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Font size");
+                    let mut fs = tc.font_size as f32;
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut fs, 12.0..=120.0)
+                                .suffix(" pt")
+                                .fixed_decimals(0),
+                        )
+                        .changed()
+                    {
+                        tc.font_size = fs as u32;
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Color");
+                    let mut color = egui::Color32::from_rgba_unmultiplied(
+                        tc.color[0],
+                        tc.color[1],
+                        tc.color[2],
+                        tc.color[3],
+                    );
+                    if egui::color_picker::color_edit_button_srgba(
+                        ui,
+                        &mut color,
+                        egui::color_picker::Alpha::OnlyBlend,
+                    )
+                    .changed()
+                    {
+                        tc.color = color.to_array();
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("H-Align");
+                    ui.selectable_value(&mut tc.h_align, state::HAlign::Left, "Left");
+                    ui.selectable_value(&mut tc.h_align, state::HAlign::Centre, "Centre");
+                    ui.selectable_value(&mut tc.h_align, state::HAlign::Right, "Right");
+                });
+                ui.horizontal(|ui| {
+                    ui.label("V-Align");
+                    ui.selectable_value(&mut tc.v_align, state::VAlign::Top, "Top");
+                    ui.selectable_value(&mut tc.v_align, state::VAlign::Middle, "Middle");
+                    ui.selectable_value(&mut tc.v_align, state::VAlign::Bottom, "Bottom");
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Start");
+                    let mut start_secs = tc.start_on_track.as_secs_f32();
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut start_secs)
+                                .suffix(" s")
+                                .speed(0.1),
+                        )
+                        .changed()
+                    {
+                        tc.start_on_track = Duration::from_secs_f32(start_secs.max(0.0));
+                    }
+                    ui.label("Duration");
+                    let mut dur_secs = tc.duration.as_secs_f32();
+                    if ui
+                        .add(egui::DragValue::new(&mut dur_secs).suffix(" s").speed(0.1))
+                        .changed()
+                    {
+                        tc.duration = Duration::from_secs_f32(dur_secs.max(0.1));
+                    }
+                });
+                // avio gap: title clips are UI-only; TimelineBuilder has no drawtext API (docs/issue47.md).
+                ui.weak(
+                    "Title clips render in the UI only and are not exported \
+                         (avio gap — docs/issue47.md).",
+                );
+            });
+    }
+}
+
 pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
 
@@ -891,362 +1277,6 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
         }
     });
 
-    // ── Clip Properties panel (video tracks only; shown when a clip is selected) ────
-    if let Some((ti, ci)) = state.timeline_selected
-        && ti < state.timeline.audio_track_start()
-    {
-        let src_name = state
-            .timeline
-            .tracks
-            .get(ti)
-            .and_then(|t| t.clips.get(ci))
-            .and_then(|c| state.clips.get(c.source_index))
-            .and_then(|s| s.path.file_name())
-            .and_then(|n| n.to_str())
-            .unwrap_or("(clip)")
-            .to_owned();
-        if let Some(clip) = state
-            .timeline
-            .tracks
-            .get_mut(ti)
-            .and_then(|t| t.clips.get_mut(ci))
-        {
-            egui::CollapsingHeader::new(format!("Clip Properties — {src_name}"))
-                .default_open(true)
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("Speed");
-                        let mut speed_pct = clip.speed * 100.0;
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut speed_pct, 10.0..=400.0)
-                                    .suffix(" %")
-                                    .fixed_decimals(0),
-                            )
-                            .changed()
-                        {
-                            clip.speed = (speed_pct / 100.0).clamp(0.1, 4.0);
-                        }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Opacity");
-                        let mut opacity_pct = clip.opacity * 100.0;
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut opacity_pct, 0.0..=100.0)
-                                    .suffix(" %")
-                                    .fixed_decimals(0),
-                            )
-                            .changed()
-                        {
-                            clip.opacity = (opacity_pct / 100.0).clamp(0.0, 1.0);
-                        }
-                    });
-                    // Blend mode is only meaningful for overlay (V2+) clips.
-                    if ti >= 1 {
-                        ui.horizontal(|ui| {
-                            ui.label("Blend");
-                            egui::ComboBox::from_id_salt("clip_blend_mode")
-                                .selected_text(blend_mode_label(clip.blend_mode))
-                                .show_ui(ui, |ui| {
-                                    for mode in [
-                                        avio::BlendMode::Normal,
-                                        avio::BlendMode::Multiply,
-                                        avio::BlendMode::Screen,
-                                        avio::BlendMode::Overlay,
-                                    ] {
-                                        ui.selectable_value(
-                                            &mut clip.blend_mode,
-                                            mode,
-                                            blend_mode_label(mode),
-                                        );
-                                    }
-                                });
-                        });
-                    }
-                    ui.horizontal(|ui| {
-                        ui.label("Brightness");
-                        ui.add(
-                            egui::Slider::new(&mut clip.brightness, -1.0..=1.0)
-                                .fixed_decimals(2),
-                        );
-                        ui.separator();
-                        ui.label("Contrast");
-                        ui.add(
-                            egui::Slider::new(&mut clip.contrast, 0.0..=3.0).fixed_decimals(2),
-                        );
-                        ui.separator();
-                        ui.label("Saturation");
-                        ui.add(
-                            egui::Slider::new(&mut clip.saturation, 0.0..=3.0).fixed_decimals(2),
-                        );
-                        ui.separator();
-                        #[allow(clippy::float_cmp)]
-                        let is_neutral =
-                            clip.brightness == 0.0 && clip.contrast == 1.0 && clip.saturation == 1.0;
-                        if ui
-                            .add_enabled(!is_neutral, egui::Button::new("Reset"))
-                            .on_hover_text("Reset brightness / contrast / saturation to defaults")
-                            .clicked()
-                        {
-                            clip.brightness = 0.0;
-                            clip.contrast = 1.0;
-                            clip.saturation = 1.0;
-                        }
-                    });
-                    // White balance — temperature (Kelvin) + tint, via avio WhiteBalance.
-                    // Labels precede their sliders (matches the brightness row above).
-                    ui.horizontal(|ui| {
-                        ui.label("White Balance — Temp K");
-                        ui.add(egui::Slider::new(&mut clip.wb_temperature, 2000..=12000));
-                        ui.separator();
-                        ui.label("Tint");
-                        ui.add(
-                            egui::Slider::new(&mut clip.wb_tint, -0.5..=0.5).fixed_decimals(2),
-                        );
-                        ui.separator();
-                        #[allow(clippy::float_cmp)]
-                        let wb_off =
-                            clip.wb_temperature == state::WB_NEUTRAL_TEMP && clip.wb_tint == 0.0;
-                        if ui
-                            .add_enabled(!wb_off, egui::Button::new("Reset"))
-                            .on_hover_text("Reset white balance to neutral")
-                            .clicked()
-                        {
-                            clip.wb_temperature = state::WB_NEUTRAL_TEMP;
-                            clip.wb_tint = 0.0;
-                        }
-                    });
-                    // Hue rotation + per-channel gamma, via avio Hue / Gamma.
-                    ui.horizontal(|ui| {
-                        ui.label("Hue °");
-                        ui.add(
-                            egui::Slider::new(&mut clip.hue_degrees, -180.0..=180.0)
-                                .fixed_decimals(0),
-                        );
-                        ui.separator();
-                        ui.label("Gamma R");
-                        ui.add(egui::Slider::new(&mut clip.gamma_r, 0.1..=3.0).fixed_decimals(2));
-                        ui.label("G");
-                        ui.add(egui::Slider::new(&mut clip.gamma_g, 0.1..=3.0).fixed_decimals(2));
-                        ui.label("B");
-                        ui.add(egui::Slider::new(&mut clip.gamma_b, 0.1..=3.0).fixed_decimals(2));
-                        ui.separator();
-                        #[allow(clippy::float_cmp)]
-                        let hsl_off = clip.hue_degrees == 0.0
-                            && clip.gamma_r == 1.0
-                            && clip.gamma_g == 1.0
-                            && clip.gamma_b == 1.0;
-                        if ui
-                            .add_enabled(!hsl_off, egui::Button::new("Reset"))
-                            .on_hover_text("Reset hue and gamma to neutral")
-                            .clicked()
-                        {
-                            clip.hue_degrees = 0.0;
-                            clip.gamma_r = 1.0;
-                            clip.gamma_g = 1.0;
-                            clip.gamma_b = 1.0;
-                        }
-                    });
-                    // Vignette (darkened edges) via avio Vignette. Strength 0 = off;
-                    // centre X/Y are percentages of the frame (50 = centre).
-                    ui.horizontal(|ui| {
-                        ui.label("Vignette");
-                        ui.add(
-                            egui::Slider::new(&mut clip.vignette, 0.0..=100.0).fixed_decimals(0),
-                        );
-                        ui.separator();
-                        let has_vig = clip.vignette > 0.0;
-                        ui.add_enabled(
-                            has_vig,
-                            egui::Slider::new(&mut clip.vignette_x, 0.0..=100.0)
-                                .fixed_decimals(0)
-                                .text("CX"),
-                        );
-                        ui.add_enabled(
-                            has_vig,
-                            egui::Slider::new(&mut clip.vignette_y, 0.0..=100.0)
-                                .fixed_decimals(0)
-                                .text("CY"),
-                        );
-                        ui.separator();
-                        #[allow(clippy::float_cmp)]
-                        let vig_off = clip.vignette == 0.0
-                            && clip.vignette_x == 50.0
-                            && clip.vignette_y == 50.0;
-                        if ui
-                            .add_enabled(!vig_off, egui::Button::new("Reset"))
-                            .on_hover_text("Reset vignette to neutral")
-                            .clicked()
-                        {
-                            clip.vignette = 0.0;
-                            clip.vignette_x = 50.0;
-                            clip.vignette_y = 50.0;
-                        }
-                    });
-                    // Tone curves (Luma + R/G/B) via avio Curves — draggable editor.
-                    egui::CollapsingHeader::new("Tone Curves")
-                        .id_salt("tone_curves")
-                        .show(ui, |ui| {
-                            super::curve_editor::tone_curve_editor(ui, &mut clip.curves);
-                        });
-                    // 3-way colour corrector (lift/gamma/gain) via avio ThreeWayCC.
-                    egui::CollapsingHeader::new("Color Wheels")
-                        .id_salt("color_wheels")
-                        .show(ui, |ui| {
-                            super::color_wheels::color_wheels_editor(ui, &mut clip.wheels);
-                        });
-                    // Stackable video effects via avio FilterSteps (blur, sharpen, …).
-                    egui::CollapsingHeader::new("Video Effects")
-                        .id_salt("video_effects")
-                        .show(ui, |ui| {
-                            let fx = &mut clip.video_effects;
-                            // Temporal filters (tblend / hqdn3d) need consecutive
-                            // frames; the realtime preview pushes a single frame, so
-                            // they only show during playback and on export.
-                            let temporal_note = "Temporal effect — shows during playback and on export, not on a paused frame.";
-                            ui.add(egui::Slider::new(&mut fx.blur, 0.0..=10.0).text("Blur"));
-                            ui.add(egui::Slider::new(&mut fx.sharpen, 0.0..=1.5).text("Sharpen"));
-                            ui.add(egui::Slider::new(&mut fx.denoise, 0.0..=1.0).text("Denoise"))
-                                .on_hover_text(temporal_note);
-                            ui.add(egui::Slider::new(&mut fx.grain, 0.0..=100.0).text("Grain"));
-                            ui.add(egui::Slider::new(&mut fx.glow, 0.0..=1.0).text("Glow"));
-                            ui.add(
-                                egui::Slider::new(&mut fx.motion_blur, 0.0..=360.0)
-                                    .text("Motion Blur"),
-                            )
-                            .on_hover_text(temporal_note);
-                            ui.add(
-                                egui::Slider::new(&mut fx.chromatic_aberration, 0.0..=10.0)
-                                    .text("Chromatic Aberration"),
-                            );
-                            ui.label(
-                                egui::RichText::new(
-                                    "Denoise / Motion Blur preview during playback & export",
-                                )
-                                .weak()
-                                .small(),
-                            );
-                            let off = fx.is_neutral();
-                            if ui
-                                .add_enabled(!off, egui::Button::new("Reset"))
-                                .on_hover_text("Reset all video effects")
-                                .clicked()
-                            {
-                                *fx = state::VideoEffects::default();
-                            }
-                        });
-                    // 3D LUT (.cube) — export-only via avio Clip effect chain.
-                    ui.horizontal(|ui| {
-                        ui.label("LUT (.cube)");
-                        if ui.button("Load…").clicked()
-                            && let Some(path) = rfd::FileDialog::new()
-                                .add_filter("Cube LUT", &["cube"])
-                                .pick_file()
-                        {
-                            clip.lut_path = Some(path);
-                        }
-                        if clip.lut_path.is_some() && ui.button("Clear").clicked() {
-                            clip.lut_path = None;
-                        }
-                        if let Some(p) = &clip.lut_path {
-                            let name = p
-                                .file_name()
-                                .map(|n| n.to_string_lossy().into_owned())
-                                .unwrap_or_default();
-                            ui.weak(name);
-                        }
-                    });
-                    ui.weak("Color correction applied on Export only (ff-preview limitation — docs/issue40.md). Speed applies to preview and export; audio pitch changes proportionally in preview (no pitch correction — docs/issue42.md). Opacity applies to preview (V1 fades to black; V2 fades over V1). Blend mode applies to export only (docs/issue43.md). LUT applies to preview and export. Hue/Gamma preview is approximate (export is the avio result).");
-                });
-        }
-    }
-
-    // ── Title Editor ──────────────────────────────────────────────────────────
-    if let Some(tci) = state.selected_title_clip
-        && let Some(tc) = state.timeline.title_clips.get_mut(tci)
-    {
-        egui::CollapsingHeader::new("Title Properties")
-            .default_open(true)
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Text");
-                    ui.text_edit_multiline(&mut tc.text);
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Font size");
-                    let mut fs = tc.font_size as f32;
-                    if ui
-                        .add(
-                            egui::Slider::new(&mut fs, 12.0..=120.0)
-                                .suffix(" pt")
-                                .fixed_decimals(0),
-                        )
-                        .changed()
-                    {
-                        tc.font_size = fs as u32;
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Color");
-                    let mut color = egui::Color32::from_rgba_unmultiplied(
-                        tc.color[0],
-                        tc.color[1],
-                        tc.color[2],
-                        tc.color[3],
-                    );
-                    if egui::color_picker::color_edit_button_srgba(
-                        ui,
-                        &mut color,
-                        egui::color_picker::Alpha::OnlyBlend,
-                    )
-                    .changed()
-                    {
-                        tc.color = color.to_array();
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label("H-Align");
-                    ui.selectable_value(&mut tc.h_align, state::HAlign::Left, "Left");
-                    ui.selectable_value(&mut tc.h_align, state::HAlign::Centre, "Centre");
-                    ui.selectable_value(&mut tc.h_align, state::HAlign::Right, "Right");
-                });
-                ui.horizontal(|ui| {
-                    ui.label("V-Align");
-                    ui.selectable_value(&mut tc.v_align, state::VAlign::Top, "Top");
-                    ui.selectable_value(&mut tc.v_align, state::VAlign::Middle, "Middle");
-                    ui.selectable_value(&mut tc.v_align, state::VAlign::Bottom, "Bottom");
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Start");
-                    let mut start_secs = tc.start_on_track.as_secs_f32();
-                    if ui
-                        .add(
-                            egui::DragValue::new(&mut start_secs)
-                                .suffix(" s")
-                                .speed(0.1),
-                        )
-                        .changed()
-                    {
-                        tc.start_on_track = Duration::from_secs_f32(start_secs.max(0.0));
-                    }
-                    ui.label("Duration");
-                    let mut dur_secs = tc.duration.as_secs_f32();
-                    if ui
-                        .add(egui::DragValue::new(&mut dur_secs).suffix(" s").speed(0.1))
-                        .changed()
-                    {
-                        tc.duration = Duration::from_secs_f32(dur_secs.max(0.1));
-                    }
-                });
-                // avio gap: title clips are UI-only; TimelineBuilder has no drawtext API (docs/issue47.md).
-                ui.weak(
-                    "Title clips render in the UI only and are not exported \
-                         (avio gap — docs/issue47.md).",
-                );
-            });
-    }
-
     ui.separator();
 
     const TRACK_HEIGHT: f32 = 40.0;
@@ -1449,7 +1479,12 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     egui::vec2(LABEL_WIDTH, TRACK_HEIGHT),
                     egui::Layout::top_down(egui::Align::Center),
                     |ui| {
-                        ui.label("T1");
+                        ui.label(
+                            egui::RichText::new("T1")
+                                .strong()
+                                .color(egui::Color32::from_rgb(200, 150, 50)),
+                        )
+                        .on_hover_text("Title track");
                     },
                 );
 
@@ -1646,7 +1681,12 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                     .count();
                                 format!("A{an}")
                             };
-                            ui.label(label);
+                            let kind_color = if track.kind == state::TrackKind::Video {
+                                egui::Color32::from_rgb(120, 180, 210)
+                            } else {
+                                egui::Color32::from_rgb(130, 200, 140)
+                            };
+                            ui.label(egui::RichText::new(label).strong().color(kind_color));
                             ui.horizontal(|ui| {
                                 let m_col = if track.muted {
                                     egui::Color32::from_rgb(240, 160, 40)

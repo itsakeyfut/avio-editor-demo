@@ -364,7 +364,8 @@ impl eframe::App for AvioEditorApp {
         // 2. Bottom: Timeline (must come before SidePanel and CentralPanel)
         egui::TopBottomPanel::bottom("timeline")
             .resizable(true)
-            .default_height(200.0)
+            .default_height(260.0)
+            .min_height(140.0)
             .show(ctx, |ui| {
                 ui::timeline::show(&mut self.state, ui);
             });
@@ -377,7 +378,23 @@ impl eframe::App for AvioEditorApp {
                 ui::clip_browser::show(&mut self.state, ui, ctx);
             });
 
-        // 4. Center: Source Monitor (must be last)
+        // 4. Right: Inspector — clip / title properties (before CentralPanel)
+        let inspector = egui::SidePanel::right("inspector")
+            .resizable(true)
+            .default_width(self.state.inspector_width)
+            .width_range(220.0..=560.0)
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui::timeline::show_inspector(&mut self.state, ui);
+                    });
+            });
+        // Persist the panel's actual width so it survives egui dropping its own
+        // PanelState during continuous playback repaints.
+        self.state.inspector_width = inspector.response.rect.width();
+
+        // 5. Center: Source Monitor (must be last)
         egui::CentralPanel::default().show(ctx, |ui| {
             ui::monitor::show(&mut self.state, ui, ctx);
         });
