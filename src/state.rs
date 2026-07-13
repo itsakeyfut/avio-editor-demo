@@ -159,6 +159,10 @@ pub struct AppState {
     pub export_use_proxies: bool,
     /// Index into `TimelineState::title_clips` of the currently selected title clip.
     pub selected_title_clip: Option<usize>,
+    /// Persisted width of the right inspector panel. Fed back as the panel's
+    /// `default_width` each frame so the width survives even when egui drops its
+    /// own `PanelState` (which happens during continuous playback repaints).
+    pub inspector_width: f32,
     /// Active tab in the clip browser left panel.
     pub browser_tab: BrowserTab,
     /// Text clip presets stored in the browser's Text tab.
@@ -244,6 +248,7 @@ impl Default for AppState {
             export_range_enabled: false,
             export_use_proxies: false,
             selected_title_clip: None,
+            inspector_width: 320.0,
             browser_tab: BrowserTab::Media,
             text_presets: Vec::new(),
             selected_text_preset: None,
