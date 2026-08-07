@@ -25,6 +25,8 @@ pub struct ProjectFile {
     pub export_range_enabled: bool,
     pub timeline_loop_enabled: bool,
     pub pixels_per_second: f32,
+    #[serde(default)]
+    pub project_aspect: crate::state::AspectPreset,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -367,6 +369,7 @@ pub fn save_project(state: &AppState, path: &Path) -> Result<(), String> {
         export_range_enabled: state.export_range_enabled,
         timeline_loop_enabled: state.timeline_loop_enabled,
         pixels_per_second: state.timeline.pixels_per_second,
+        project_aspect: state.project_aspect,
     };
 
     let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
@@ -500,6 +503,7 @@ pub fn load_project(state: &mut AppState, path: &Path) -> Result<Vec<String>, St
     state.export_range_enabled = project.export_range_enabled;
     state.timeline_loop_enabled = project.timeline_loop_enabled;
     state.timeline.pixels_per_second = project.pixels_per_second;
+    state.project_aspect = project.project_aspect;
 
     // Regenerate clip browser thumbnails, sprite sheets, scenes, waveforms, and
     // silence regions — these are not serialized and must be rebuilt from source.

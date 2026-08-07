@@ -343,6 +343,24 @@ impl eframe::App for AvioEditorApp {
                         }
                     }
                 });
+                ui.separator();
+                ui.label("Aspect");
+                egui::ComboBox::from_id_salt("project_aspect")
+                    .selected_text(self.state.project_aspect.label())
+                    .show_ui(ui, |ui| {
+                        for preset in state::AspectPreset::ALL {
+                            ui.selectable_value(
+                                &mut self.state.project_aspect,
+                                preset,
+                                preset.label(),
+                            );
+                        }
+                    })
+                    .response
+                    .on_hover_text(
+                        "Project output aspect ratio. Re-frames the preview and export; \
+                         applies on the next ▶ Play. Per-clip Fit/Fill is set in the Transform section.",
+                    );
             });
         });
 
