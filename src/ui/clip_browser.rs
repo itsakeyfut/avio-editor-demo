@@ -667,6 +667,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
                 curves: state::ToneCurves::default(),
                 wheels: state::ColorWheels::default(),
                 video_effects: state::VideoEffects::default(),
+                transform: state::Transform::default(),
             });
         }
         let can_trim = clip.in_point.is_some() && clip.out_point.is_some();

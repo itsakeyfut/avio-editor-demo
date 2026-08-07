@@ -68,6 +68,8 @@ pub struct ExportClip {
     pub wheels: crate::state::ColorWheels,
     /// Per-clip stackable video effects (blur, sharpen, denoise, …).
     pub video_effects: crate::state::VideoEffects,
+    /// Per-clip geometric transform (crop / rotate / flip).
+    pub transform: crate::state::Transform,
 }
 
 /// Send-safe snapshot of all timeline tracks, constructed on the main thread
@@ -333,6 +335,89 @@ pub fn apply_video_effects(clip: avio::Clip, fx: &crate::state::VideoEffects) ->
     }
 }
 
+/// Attaches the per-clip geometric transform (crop → flip → rotate) as avio
+/// `FilterStep`s, applied *before* [`apply_color_grade`] so the grade and effects
+/// act on the transformed geometry. `width`/`height` are the source dimensions,
+/// used to convert crop edge-inset percentages to a pixel rectangle. Shared by
+/// export and the timeline preview so both apply the identical chain.
+///
+/// Crop is followed by a `Scale` back to the source `width`×`height`, so a crop
+/// is a "crop & zoom to fill" that keeps the frame at its original size. This is
+/// deliberate: a bare `Crop` yields a smaller frame, which the preview auto-fits
+/// to the monitor (appears zoomed) while the export overlays it at native size on
+/// the canvas (appears small on black) — the two would diverge. Scaling back to
+/// the source size makes preview and export identical. A true letterbox crop
+/// needs project canvas / aspect plumbing (deferred, see #135 scope note).
+///
+/// (Separately, the realtime preview used to freeze on any frame whose size
+/// changed mid-graph; that avio gap is fixed — docs/issue67.md.)
+#[allow(clippy::float_cmp)]
+pub fn apply_transform(
+    clip: avio::Clip,
+    t: &crate::state::Transform,
+    width: u32,
+    height: u32,
+) -> avio::Clip {
+    // Crop: convert edge insets (%) to an even-aligned pixel rectangle, then
+    // scale the cropped region back to the source size (see the fn docs).
+    let clip = if width > 0
+        && height > 0
+        && (t.crop_left > 0.0 || t.crop_right > 0.0 || t.crop_top > 0.0 || t.crop_bottom > 0.0)
+    {
+        // Round to the nearest even value (yuv420 chroma requires even offsets/sizes).
+        let round_even = |v: f32| -> u32 {
+            let n = v.round().max(0.0) as u32;
+            n & !1
+        };
+        let x = round_even(width as f32 * t.crop_left / 100.0);
+        let right = round_even(width as f32 * t.crop_right / 100.0);
+        let y = round_even(height as f32 * t.crop_top / 100.0);
+        let bottom = round_even(height as f32 * t.crop_bottom / 100.0);
+        let crop_w = width.saturating_sub(x + right) & !1;
+        let crop_h = height.saturating_sub(y + bottom) & !1;
+        if crop_w >= 2 && crop_h >= 2 {
+            clip.with_video_effect(avio::FilterStep::Crop {
+                x,
+                y,
+                width: crop_w,
+                height: crop_h,
+            })
+            .with_video_effect(avio::FilterStep::Scale {
+                width,
+                height,
+                algorithm: avio::ScaleAlgorithm::Bicubic,
+            })
+        } else {
+            log::warn!(
+                "apply_transform: crop insets exceed frame ({}x{}); skipping crop",
+                width,
+                height
+            );
+            clip
+        }
+    } else {
+        clip
+    };
+    let clip = if t.flip_h {
+        clip.with_video_effect(avio::FilterStep::HFlip)
+    } else {
+        clip
+    };
+    let clip = if t.flip_v {
+        clip.with_video_effect(avio::FilterStep::VFlip)
+    } else {
+        clip
+    };
+    if t.rotation != 0.0 {
+        clip.with_video_effect(avio::FilterStep::Rotate {
+            angle_degrees: t.rotation as f64,
+            fill_color: "black".to_string(),
+        })
+    } else {
+        clip
+    }
+}
+
 fn clips_to_avio(clips: Vec<ExportClip>) -> Vec<avio::Clip> {
     clips
         .into_iter()
@@ -371,6 +456,9 @@ fn clips_to_avio(clips: Vec<ExportClip>) -> Vec<avio::Clip> {
                 Some(kind) => clip.with_transition(kind, c.transition_duration),
                 None => clip,
             };
+            // Geometric transform (crop → flip → rotate) applied before the grade
+            // so grading/effects act on the transformed image. Shared with preview.
+            let clip = apply_transform(clip, &c.transform, c.width, c.height);
             // Colour grading chain (Eq → WB → Hue → Gamma → ThreeWayCC → Curves → LUT → Vignette). Built from the
             // shared `apply_color_grade` so export and the preview
             // (`Clip::apply_video_effects`) apply the identical chain.
@@ -1085,6 +1173,107 @@ mod tests {
                 assert_eq!(*bh, -3);
             }
             other => panic!("expected ChromaticAberration, got {other:?}"),
+        }
+    }
+
+    /// A neutral transform attaches no steps.
+    #[test]
+    fn transform_neutral_produces_no_step() {
+        use super::apply_transform;
+
+        let t = crate::state::Transform::default();
+        let steps =
+            apply_transform(avio::Clip::new("test.mp4"), &t, 1920, 1080).video_effect_chain();
+        assert!(steps.is_empty());
+    }
+
+    /// Crop edge insets map to an even-aligned pixel rectangle.
+    #[test]
+    fn crop_insets_map_to_even_rect() {
+        use super::apply_transform;
+
+        let t = crate::state::Transform {
+            crop_left: 10.0,   // 192 px
+            crop_right: 10.0,  // 192 px
+            crop_top: 25.0,    // 270 px
+            crop_bottom: 25.0, // 270 px
+            ..Default::default()
+        };
+        let steps =
+            apply_transform(avio::Clip::new("test.mp4"), &t, 1920, 1080).video_effect_chain();
+        // Crop is followed by a Scale back to the source size (crop & zoom to fill).
+        assert_eq!(steps.len(), 2);
+        match &steps[0] {
+            avio::FilterStep::Crop {
+                x,
+                y,
+                width,
+                height,
+            } => {
+                assert_eq!(*x, 192);
+                assert_eq!(*y, 270);
+                assert_eq!(*width, 1920 - 192 - 192); // 1536
+                assert_eq!(*height, 1080 - 270 - 270); // 540
+                // All even.
+                assert_eq!(*x % 2, 0);
+                assert_eq!(*y % 2, 0);
+                assert_eq!(*width % 2, 0);
+                assert_eq!(*height % 2, 0);
+            }
+            other => panic!("expected Crop, got {other:?}"),
+        }
+        match &steps[1] {
+            avio::FilterStep::Scale { width, height, .. } => {
+                assert_eq!(*width, 1920);
+                assert_eq!(*height, 1080);
+            }
+            other => panic!("expected Scale, got {other:?}"),
+        }
+    }
+
+    /// Crop insets that exceed the frame skip the crop step entirely.
+    #[test]
+    fn crop_insets_exceeding_frame_skip() {
+        use super::apply_transform;
+
+        let t = crate::state::Transform {
+            crop_left: 45.0,
+            crop_right: 45.0,
+            crop_top: 45.0,
+            crop_bottom: 45.0,
+            ..Default::default()
+        };
+        // On a tiny 8×8 source the insets round to 4 px per side, leaving a
+        // 0 px residual (< 2), forcing the skip path.
+        let steps = apply_transform(avio::Clip::new("test.mp4"), &t, 8, 8).video_effect_chain();
+        assert!(steps.is_empty());
+    }
+
+    /// Flips and rotation emit steps in order (flip H → flip V → rotate).
+    #[test]
+    fn flip_and_rotation_emit_steps_in_order() {
+        use super::apply_transform;
+
+        let t = crate::state::Transform {
+            rotation: 30.0,
+            flip_h: true,
+            flip_v: true,
+            ..Default::default()
+        };
+        let steps =
+            apply_transform(avio::Clip::new("test.mp4"), &t, 1920, 1080).video_effect_chain();
+        assert_eq!(steps.len(), 3);
+        assert!(matches!(steps[0], avio::FilterStep::HFlip));
+        assert!(matches!(steps[1], avio::FilterStep::VFlip));
+        match &steps[2] {
+            avio::FilterStep::Rotate {
+                angle_degrees,
+                fill_color,
+            } => {
+                assert!((*angle_degrees - 30.0).abs() < 1e-9);
+                assert_eq!(fill_color, "black");
+            }
+            other => panic!("expected Rotate, got {other:?}"),
         }
     }
 }

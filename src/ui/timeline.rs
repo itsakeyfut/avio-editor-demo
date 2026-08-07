@@ -208,8 +208,8 @@ pub fn show_inspector(state: &mut state::AppState, ui: &mut egui::Ui) {
                 .id_salt("clip_properties")
                 .default_open(true)
                 .show(ui, |ui| {
-                    egui::CollapsingHeader::new("Transform")
-                        .id_salt("clip_transform")
+                    egui::CollapsingHeader::new("Speed & Compositing")
+                        .id_salt("clip_speed_compositing")
                         .default_open(true)
                         .show(ui, |ui| {
                     ui.horizontal(|ui| {
@@ -262,6 +262,63 @@ pub fn show_inspector(state: &mut state::AppState, ui: &mut egui::Ui) {
                                 });
                         });
                     }
+                        });
+                    egui::CollapsingHeader::new("Transform")
+                        .id_salt("clip_transform")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                    ui.label("Crop (edge insets)");
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Left");
+                        ui.add(
+                            egui::Slider::new(&mut clip.transform.crop_left, 0.0..=45.0)
+                                .suffix(" %")
+                                .fixed_decimals(1),
+                        );
+                        ui.separator();
+                        ui.label("Right");
+                        ui.add(
+                            egui::Slider::new(&mut clip.transform.crop_right, 0.0..=45.0)
+                                .suffix(" %")
+                                .fixed_decimals(1),
+                        );
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Top");
+                        ui.add(
+                            egui::Slider::new(&mut clip.transform.crop_top, 0.0..=45.0)
+                                .suffix(" %")
+                                .fixed_decimals(1),
+                        );
+                        ui.separator();
+                        ui.label("Bottom");
+                        ui.add(
+                            egui::Slider::new(&mut clip.transform.crop_bottom, 0.0..=45.0)
+                                .suffix(" %")
+                                .fixed_decimals(1),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Rotation");
+                        ui.add(
+                            egui::Slider::new(&mut clip.transform.rotation, -180.0..=180.0)
+                                .suffix(" °")
+                                .fixed_decimals(1),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut clip.transform.flip_h, "Flip H");
+                        ui.checkbox(&mut clip.transform.flip_v, "Flip V");
+                        if ui
+                            .add_enabled(
+                                !clip.transform.is_neutral(),
+                                egui::Button::new("Reset"),
+                            )
+                            .clicked()
+                        {
+                            clip.transform = state::Transform::default();
+                        }
+                    });
                         });
                     egui::CollapsingHeader::new("Color Grading")
                         .id_salt("clip_color_grading")
@@ -639,6 +696,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         curves: tc.curves.clone(),
                         wheels: tc.wheels,
                         video_effects: tc.video_effects,
+                        transform: tc.transform,
                     }
                 };
                 let tracks = &state.timeline.tracks;
@@ -1115,6 +1173,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 curves: tc.curves.clone(),
                 wheels: tc.wheels,
                 video_effects: tc.video_effects,
+                transform: tc.transform,
             };
             let tracks = &state.timeline.tracks;
             let audio_start = state.timeline.audio_track_start();
@@ -1203,6 +1262,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                             curves: tc.curves.clone(),
                             wheels: tc.wheels,
                             video_effects: tc.video_effects,
+                            transform: tc.transform,
                         };
                         let tracks = &state.timeline.tracks;
                         let audio_start = state.timeline.audio_track_start();
@@ -3035,6 +3095,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 curves: tc.curves.clone(),
                 wheels: tc.wheels,
                 video_effects: tc.video_effects,
+                transform: tc.transform,
             };
             let tracks = &state.timeline.tracks;
             let audio_start = state.timeline.audio_track_start();
@@ -3133,6 +3194,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             curves: state::ToneCurves::default(),
             wheels: state::ColorWheels::default(),
             video_effects: state::VideoEffects::default(),
+            transform: state::Transform::default(),
         };
         // Sorted insert so that out-of-order drops don't corrupt array order.
         let track = &mut state.timeline.tracks[track_idx].clips;
@@ -3274,6 +3336,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 curves: state.timeline.tracks[ti].clips[ci].curves.clone(),
                 wheels: state.timeline.tracks[ti].clips[ci].wheels,
                 video_effects: state.timeline.tracks[ti].clips[ci].video_effects,
+                transform: state.timeline.tracks[ti].clips[ci].transform,
             };
             state.timeline.tracks[ti].clips.insert(ci + 1, right);
         }
