@@ -59,6 +59,8 @@ pub struct TrackClipData {
     pub wheels: crate::state::ColorWheels,
     /// Per-clip stackable video effects.
     pub video_effects: crate::state::VideoEffects,
+    /// Per-clip geometric transform (crop / rotate / flip).
+    pub transform: crate::state::Transform,
 }
 
 // ── EguiFrameSink ─────────────────────────────────────────────────────────────
@@ -435,6 +437,9 @@ pub fn spawn_timeline_player(
             if let Some(kind) = tc.transition {
                 c = c.with_transition(kind, tc.transition_duration);
             }
+            // Geometric transform (crop → flip → rotate) applied before the grade,
+            // matching export so the monitor reflects the rendered geometry.
+            c = crate::export::apply_transform(c, &tc.transform, tc.width, tc.height);
             // Full colour grade (Eq → WB → Hue → Gamma → ThreeWayCC → Curves → LUT → Vignette), shared with export.
             // The preview player applies these via avio's RealtimeComposer, so the
             // monitor matches the rendered output without any host-side re-grading.

@@ -581,6 +581,40 @@ impl VideoEffects {
     }
 }
 
+/// Per-clip geometric transform: crop (edge insets), free rotation, and flips.
+/// Neutral (`Default`) = no transform; non-neutral fields are attached in order
+/// via avio `FilterStep`s (`Crop` → `HFlip`/`VFlip` → `Rotate`) before grading.
+#[derive(Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Transform {
+    /// Crop inset from the left edge, as a percentage of width (0.0–45.0).
+    pub crop_left: f32,
+    /// Crop inset from the right edge, as a percentage of width (0.0–45.0).
+    pub crop_right: f32,
+    /// Crop inset from the top edge, as a percentage of height (0.0–45.0).
+    pub crop_top: f32,
+    /// Crop inset from the bottom edge, as a percentage of height (0.0–45.0).
+    pub crop_bottom: f32,
+    /// Free rotation in degrees, clockwise (−180.0–180.0). `0.0` = no rotation.
+    pub rotation: f32,
+    /// Horizontal flip (mirror left–right).
+    pub flip_h: bool,
+    /// Vertical flip (mirror top–bottom).
+    pub flip_v: bool,
+}
+
+impl Transform {
+    /// `true` when no transform is active (no crop, no rotation, no flip).
+    pub fn is_neutral(&self) -> bool {
+        self.crop_left == 0.0
+            && self.crop_right == 0.0
+            && self.crop_top == 0.0
+            && self.crop_bottom == 0.0
+            && self.rotation == 0.0
+            && !self.flip_h
+            && !self.flip_v
+    }
+}
+
 #[derive(Clone, PartialEq)]
 pub struct TimelineClip {
     pub source_index: usize,
@@ -653,6 +687,8 @@ pub struct TimelineClip {
     pub wheels: ColorWheels,
     /// Per-clip stackable video effects. Default: all off.
     pub video_effects: VideoEffects,
+    /// Per-clip geometric transform (crop / rotate / flip). Default: neutral.
+    pub transform: Transform,
 }
 
 pub struct TimelineState {
