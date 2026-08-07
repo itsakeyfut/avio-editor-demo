@@ -90,6 +90,10 @@ pub struct ExportSnapshot {
     pub export_in: Option<Duration>,
     /// Export out-point. `Some` only when export range mode is active.
     pub export_out: Option<Duration>,
+    /// Project aspect-ratio canvas (from `AspectPreset::dims`). When `Some`, every
+    /// clip is re-framed (fit/fill) to these dimensions and the export container is
+    /// this size. `None` = `Original` (no reframe).
+    pub canvas: Option<(u32, u32)>,
 }
 
 /// A single entry in the export queue.
@@ -418,7 +422,114 @@ pub fn apply_transform(
     }
 }
 
-fn clips_to_avio(clips: Vec<ExportClip>) -> Vec<avio::Clip> {
+/// Rounds `v` down to the nearest even `u32` (yuv420 chroma needs even sizes).
+fn even_floor(v: f32) -> u32 {
+    let n = v.round().max(0.0) as u32;
+    n & !1
+}
+
+/// Re-frames a clip into the project canvas (`canvas_w`×`canvas_h`) according to
+/// `fit_mode`, as avio `FilterStep`s. Applied *last* (after grade + effects) so the
+/// grade acts on the source-framed image and reframing is the final output step.
+/// `src_w`/`src_h` are the clip's source dimensions (the frame size entering this
+/// step, since crop already scales back to source size).
+///
+/// - [`FitMode::Fill`] → centre-crop the source to the canvas aspect ratio, then
+///   scale to the canvas (cover, edges cropped).
+/// - [`FitMode::Fit`] → scale the source to fit inside the canvas, then centre-pad
+///   to the canvas (letterbox / pillarbox).
+///
+/// Both are built **crop/scale-before-resize** deliberately, avoiding two avio
+/// realtime-composer bugs: a large-offset `Crop` after a large up-`Scale` segfaults
+/// (docs/issue69.md), and `FitToAspect` is not padded in the realtime composer
+/// (docs/issue70.md). Cropping the small source first (small offsets) then scaling,
+/// and using an explicit `Scale`+`Pad`, sidestep both while producing identical
+/// preview and export framing. No-op when the source already matches the canvas or
+/// has no video dimensions.
+pub fn apply_aspect(
+    clip: avio::Clip,
+    fit_mode: crate::state::FitMode,
+    src_w: u32,
+    src_h: u32,
+    canvas_w: u32,
+    canvas_h: u32,
+) -> avio::Clip {
+    if src_w == 0 || src_h == 0 || canvas_w == 0 || canvas_h == 0 {
+        return clip;
+    }
+    if src_w == canvas_w && src_h == canvas_h {
+        return clip;
+    }
+    // Aspect ratios as cross-multiplied integers to avoid float compares.
+    let src_wider = src_w * canvas_h > canvas_w * src_h;
+    match fit_mode {
+        crate::state::FitMode::Fill => {
+            // Cover: crop the source to the canvas aspect ratio (centred), then scale
+            // the cropped region up to the canvas. Cropping the source first keeps the
+            // crop offset small (no large-scale crash).
+            let (crop_w, crop_h) = if src_wider {
+                // Source is wider than the canvas → crop the sides.
+                (
+                    even_floor(src_h as f32 * canvas_w as f32 / canvas_h as f32).min(src_w & !1),
+                    src_h & !1,
+                )
+            } else {
+                // Source is taller/narrower → crop top and bottom.
+                (
+                    src_w & !1,
+                    even_floor(src_w as f32 * canvas_h as f32 / canvas_w as f32).min(src_h & !1),
+                )
+            };
+            let x = even_floor((src_w.saturating_sub(crop_w)) as f32 / 2.0);
+            let y = even_floor((src_h.saturating_sub(crop_h)) as f32 / 2.0);
+            clip.with_video_effect(avio::FilterStep::Crop {
+                x,
+                y,
+                width: crop_w,
+                height: crop_h,
+            })
+            .with_video_effect(avio::FilterStep::Scale {
+                width: canvas_w,
+                height: canvas_h,
+                algorithm: avio::ScaleAlgorithm::Bicubic,
+            })
+        }
+        crate::state::FitMode::Fit => {
+            // Letterbox: scale the source to fit inside the canvas (preserving AR),
+            // then centre-pad to the canvas. Explicit Scale+Pad because the realtime
+            // composer does not pad `FitToAspect` (docs/issue70.md).
+            let (fit_w, fit_h) = if src_wider {
+                // Constrained by width.
+                (
+                    canvas_w & !1,
+                    even_floor(src_h as f32 * canvas_w as f32 / src_w as f32).min(canvas_h & !1),
+                )
+            } else {
+                // Constrained by height.
+                (
+                    even_floor(src_w as f32 * canvas_h as f32 / src_h as f32).min(canvas_w & !1),
+                    canvas_h & !1,
+                )
+            };
+            let x = ((canvas_w.saturating_sub(fit_w)) / 2) as i32;
+            let y = ((canvas_h.saturating_sub(fit_h)) / 2) as i32;
+            clip.with_video_effect(avio::FilterStep::Scale {
+                width: fit_w,
+                height: fit_h,
+                algorithm: avio::ScaleAlgorithm::Bicubic,
+            })
+            .with_video_effect(avio::FilterStep::Pad {
+                width: canvas_w,
+                height: canvas_h,
+                x,
+                y,
+                color: "black".to_string(),
+            })
+        }
+    }
+}
+
+fn clips_to_avio(clips: Vec<ExportClip>, canvas: Option<(u32, u32)>) -> Vec<avio::Clip> {
     clips
         .into_iter()
         .map(|c| {
@@ -484,6 +595,14 @@ fn clips_to_avio(clips: Vec<ExportClip>) -> Vec<avio::Clip> {
             );
             // Stackable video effects, applied on top of the grade.
             let clip = apply_video_effects(clip, &c.video_effects);
+            // Re-frame into the project canvas (fit/fill) — the final video step,
+            // shared with the preview so both match. No-op when aspect is Original.
+            let clip = match canvas {
+                Some((cw, ch)) => {
+                    apply_aspect(clip, c.transform.fit_mode, c.width, c.height, cw, ch)
+                }
+                None => clip,
+            };
             #[allow(clippy::float_cmp)]
             let clip = if c.opacity != 1.0 {
                 clip.with_opacity(c.opacity)
@@ -684,11 +803,28 @@ fn build_and_render(
         })
         .fold(0.0_f64, f64::max);
 
+    // Effective output canvas: the aspect preset (if any) overrides the manual
+    // "Scale output" dimensions. `reframe_canvas` (Some only when an aspect preset
+    // is active) is what drives the per-clip fit/fill reframe.
+    let reframe_canvas = snapshot.canvas;
+    let builder_canvas = reframe_canvas.or(if snapshot.export_filters.scale_enabled {
+        Some((
+            snapshot.export_filters.output_width,
+            snapshot.export_filters.output_height,
+        ))
+    } else {
+        None
+    });
+    let (overlay_w, overlay_h) = builder_canvas.unwrap_or((
+        snapshot.export_filters.output_width,
+        snapshot.export_filters.output_height,
+    ));
+
     let lavfi_overlay = if timeline_dur_secs > 0.0 {
         build_lavfi_overlay_filter(
             &snapshot.title_clips,
-            snapshot.export_filters.output_width,
-            snapshot.export_filters.output_height,
+            overlay_w,
+            overlay_h,
             timeline_dur_secs,
         )
     } else {
@@ -704,9 +840,9 @@ fn build_and_render(
     let avio_video: Vec<Vec<avio::Clip>> = snapshot
         .video_clips
         .into_iter()
-        .map(clips_to_avio)
+        .map(|track| clips_to_avio(track, reframe_canvas))
         .collect();
-    let a1 = clips_to_avio(snapshot.a1_clips);
+    let a1 = clips_to_avio(snapshot.a1_clips, reframe_canvas);
 
     if avio_video.is_empty() || avio_video[0].is_empty() {
         return Err("V1 track has no clips to export".to_string());
@@ -716,11 +852,8 @@ fn build_and_render(
 
     let mut builder = avio::Timeline::builder().video_track(avio_video[0].clone());
 
-    if snapshot.export_filters.scale_enabled {
-        builder = builder.canvas(
-            snapshot.export_filters.output_width,
-            snapshot.export_filters.output_height,
-        );
+    if let Some((cw, ch)) = builder_canvas {
+        builder = builder.canvas(cw, ch);
     }
 
     // avio API gap: TimelineBuilder has no audio_filter() method.
@@ -1274,6 +1407,114 @@ mod tests {
                 assert_eq!(fill_color, "black");
             }
             other => panic!("expected Rotate, got {other:?}"),
+        }
+    }
+
+    /// A source already matching the canvas emits no aspect step.
+    #[test]
+    fn aspect_matching_size_produces_no_step() {
+        use super::apply_aspect;
+        use crate::state::FitMode;
+
+        let steps = apply_aspect(
+            avio::Clip::new("test.mp4"),
+            FitMode::Fill,
+            1920,
+            1080,
+            1920,
+            1080,
+        )
+        .video_effect_chain();
+        assert!(steps.is_empty());
+    }
+
+    /// Fit mode scales the source to fit inside the canvas, then centre-pads to it
+    /// (letterbox). Scale comes before Pad so both are within canvas bounds.
+    #[test]
+    fn aspect_fit_scales_then_pads() {
+        use super::apply_aspect;
+        use crate::state::FitMode;
+
+        // 16:9 source (1920×1080) into a 9:16 canvas (1080×1920): width-constrained,
+        // scaled to 1080×608, padded top/bottom to 1080×1920.
+        let steps = apply_aspect(
+            avio::Clip::new("test.mp4"),
+            FitMode::Fit,
+            1920,
+            1080,
+            1080,
+            1920,
+        )
+        .video_effect_chain();
+        assert_eq!(steps.len(), 2);
+        let (fw, fh) = match &steps[0] {
+            avio::FilterStep::Scale { width, height, .. } => (*width, *height),
+            other => panic!("expected Scale, got {other:?}"),
+        };
+        assert_eq!(fw, 1080);
+        assert!(fh <= 1920 && fh % 2 == 0);
+        match &steps[1] {
+            avio::FilterStep::Pad {
+                width,
+                height,
+                x,
+                y,
+                color,
+            } => {
+                assert_eq!(*width, 1080);
+                assert_eq!(*height, 1920);
+                assert_eq!(*x, 0);
+                assert_eq!(*y, ((1920 - fh) / 2) as i32);
+                assert_eq!(color, "black");
+            }
+            other => panic!("expected Pad, got {other:?}"),
+        }
+    }
+
+    /// Fill mode centre-crops the source to the canvas aspect ratio, then scales up
+    /// to the canvas. Cropping the small source first keeps the crop offset small
+    /// (avoids the large-scale crop crash — docs/issue69.md).
+    #[test]
+    fn aspect_fill_crops_then_scales() {
+        use super::apply_aspect;
+        use crate::state::FitMode;
+
+        // 16:9 source into a 9:16 canvas: crop the sides to 9:16, then scale up.
+        let steps = apply_aspect(
+            avio::Clip::new("test.mp4"),
+            FitMode::Fill,
+            1920,
+            1080,
+            1080,
+            1920,
+        )
+        .video_effect_chain();
+        assert_eq!(steps.len(), 2);
+        let (cx, cw, ch) = match &steps[0] {
+            avio::FilterStep::Crop {
+                x,
+                y,
+                width,
+                height,
+            } => {
+                assert_eq!(*y, 0);
+                // Crop is narrower than the source and even-aligned, within bounds.
+                assert!(*width < 1920 && *width % 2 == 0);
+                assert_eq!(*height, 1080);
+                assert!(*x + *width <= 1920);
+                (*x, *width, *height)
+            }
+            other => panic!("expected Crop, got {other:?}"),
+        };
+        // Centre crop.
+        assert_eq!(cx, (1920 - cw) / 2 & !1);
+        assert_eq!(ch, 1080);
+        match &steps[1] {
+            avio::FilterStep::Scale { width, height, .. } => {
+                assert_eq!(*width, 1080);
+                assert_eq!(*height, 1920);
+            }
+            other => panic!("expected Scale, got {other:?}"),
         }
     }
 }

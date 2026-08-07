@@ -38,8 +38,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
 
     if timeline_is_active {
         if let Some(tex) = &state.preview_texture {
-            let img_resp = ui.image(egui::load::SizedTexture::new(tex.id(), video_size));
-            draw_title_overlays(state, ui, img_resp.rect);
+            let img_rect = show_frame_fitted(ui, tex, video_size);
+            draw_title_overlays(state, ui, img_rect);
         } else {
             ui.allocate_ui(video_size, |ui| {
                 ui.centered_and_justified(|ui| {
@@ -54,7 +54,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
             .map(|c| c.info.primary_video().is_none() && c.info.primary_audio().is_some())
             .unwrap_or(false);
         if let Some(tex) = &state.preview_texture {
-            ui.image(egui::load::SizedTexture::new(tex.id(), video_size));
+            show_frame_fitted(ui, tex, video_size);
         } else if is_audio_only {
             ui.allocate_ui(video_size, |ui| {
                 ui.centered_and_justified(|ui| {
@@ -404,6 +404,27 @@ fn spawn_and_store(
     state.pending_proxy_rx = Some(proxy_rx);
     state.proxy_active = false;
     state.is_paused = false;
+}
+
+/// Paints the preview texture inside `video_size`, preserving the frame's aspect
+/// ratio (letterbox/pillarbox within the area) rather than stretching to fill it —
+/// so a 9:16 (or 1:1, 4:5) project shows its true shape. Returns the rect the image
+/// was painted into (used to anchor title overlays).
+fn show_frame_fitted(
+    ui: &mut egui::Ui,
+    tex: &egui::TextureHandle,
+    video_size: egui::Vec2,
+) -> egui::Rect {
+    let (area, _) = ui.allocate_exact_size(video_size, egui::Sense::hover());
+    let tex_size = tex.size_vec2();
+    if tex_size.x <= 0.0 || tex_size.y <= 0.0 || video_size.x <= 0.0 || video_size.y <= 0.0 {
+        return area;
+    }
+    let scale = (video_size.x / tex_size.x).min(video_size.y / tex_size.y);
+    let disp = tex_size * scale;
+    let img_rect = egui::Rect::from_center_size(area.center(), disp);
+    egui::Image::new(egui::load::SizedTexture::new(tex.id(), disp)).paint_at(ui, img_rect);
+    img_rect
 }
 
 /// Draws active T1 title clips as egui text on top of the preview image rect.

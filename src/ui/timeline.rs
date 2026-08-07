@@ -319,6 +319,24 @@ pub fn show_inspector(state: &mut state::AppState, ui: &mut egui::Ui) {
                             clip.transform = state::Transform::default();
                         }
                     });
+                    ui.horizontal(|ui| {
+                        ui.label("Aspect fit");
+                        ui.selectable_value(
+                            &mut clip.transform.fit_mode,
+                            state::FitMode::Fill,
+                            "Fill",
+                        );
+                        ui.selectable_value(
+                            &mut clip.transform.fit_mode,
+                            state::FitMode::Fit,
+                            "Fit",
+                        );
+                    })
+                    .response
+                    .on_hover_text(
+                        "How this clip fills the project aspect (menu bar → Aspect). \
+                         Fill covers and crops; Fit letterboxes. No effect when Aspect is Original.",
+                    );
                         });
                     egui::CollapsingHeader::new("Color Grading")
                         .id_salt("clip_color_grading")
@@ -732,6 +750,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     } else {
                         None
                     },
+                    canvas: state.project_aspect.dims(),
                 };
                 state
                     .export_queue
@@ -1204,6 +1223,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 ui.ctx().clone(),
                 start,
                 Arc::clone(&state.cpal_rate),
+                state.project_aspect.dims(),
             );
             state.timeline_player_thread = Some(thread);
             state.timeline_pending_handle_rx = Some(handle_rx);
@@ -1291,6 +1311,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                             ui.ctx().clone(),
                             resume_pos,
                             Arc::clone(&state.cpal_rate),
+                            state.project_aspect.dims(),
                         );
                         state.timeline_player_thread = Some(thread);
                         state.timeline_pending_handle_rx = Some(handle_rx);
@@ -3054,6 +3075,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
         if is_playing && !state.timeline_is_paused {
             // Restart the player immediately so the new mute/solo state is heard.
             let resume_pos = Duration::from_secs_f64(state.timeline_playhead_secs.max(0.0));
+            let aspect_canvas = state.project_aspect.dims();
             state.stop_timeline_player();
             let clips = &state.clips;
             let make_tcd = |tc: &state::TimelineClip| player::TrackClipData {
@@ -3123,6 +3145,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 ctx,
                 resume_pos,
                 Arc::clone(&state.cpal_rate),
+                aspect_canvas,
             );
             state.timeline_player_thread = Some(thread);
             state.timeline_pending_handle_rx = Some(handle_rx);

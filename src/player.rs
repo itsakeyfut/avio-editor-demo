@@ -413,6 +413,7 @@ pub fn spawn_timeline_player(
     ctx: egui::Context,
     start_pos: Duration,
     cpal_rate: Arc<AtomicU64>,
+    canvas: Option<(u32, u32)>,
 ) -> (std::thread::JoinHandle<()>, mpsc::Receiver<PlayerHandle>) {
     let (handle_tx, handle_rx) = mpsc::sync_channel::<PlayerHandle>(1);
 
@@ -465,6 +466,18 @@ pub fn spawn_timeline_player(
             );
             // Stackable video effects, on top of the grade (matches export).
             c = crate::export::apply_video_effects(c, &tc.video_effects);
+            // Re-frame into the project canvas (fit/fill) — final video step, matches
+            // export. No-op when no aspect preset is active.
+            if let Some((cw, ch)) = canvas {
+                c = crate::export::apply_aspect(
+                    c,
+                    tc.transform.fit_mode,
+                    tc.width,
+                    tc.height,
+                    cw,
+                    ch,
+                );
+            }
             #[allow(clippy::float_cmp)]
             if tc.opacity != 1.0 {
                 c = c.with_opacity(tc.opacity);

@@ -159,6 +159,9 @@ pub struct AppState {
     pub export_use_proxies: bool,
     /// Index into `TimelineState::title_clips` of the currently selected title clip.
     pub selected_title_clip: Option<usize>,
+    /// Project-level output aspect ratio. Drives both the preview reframe and the
+    /// export canvas. `Original` = no reframe (each clip keeps its source framing).
+    pub project_aspect: AspectPreset,
     /// Persisted width of the right inspector panel. Fed back as the panel's
     /// `default_width` each frame so the width survives even when egui drops its
     /// own `PanelState` (which happens during continuous playback repaints).
@@ -248,6 +251,7 @@ impl Default for AppState {
             export_range_enabled: false,
             export_use_proxies: false,
             selected_title_clip: None,
+            project_aspect: AspectPreset::default(),
             inspector_width: 320.0,
             browser_tab: BrowserTab::Media,
             text_presets: Vec::new(),
@@ -600,10 +604,16 @@ pub struct Transform {
     pub flip_h: bool,
     /// Vertical flip (mirror top–bottom).
     pub flip_v: bool,
+    /// How this clip is fitted into the project canvas when a non-`Original`
+    /// [`AspectPreset`] is active. Irrelevant when the aspect is `Original`.
+    #[serde(default)]
+    pub fit_mode: FitMode,
 }
 
 impl Transform {
-    /// `true` when no transform is active (no crop, no rotation, no flip).
+    /// `true` when no geometric transform is active (no crop, no rotation, no
+    /// flip). `fit_mode` is a framing mode, not a value to reset, so it is
+    /// intentionally excluded.
     pub fn is_neutral(&self) -> bool {
         self.crop_left == 0.0
             && self.crop_right == 0.0
@@ -613,6 +623,68 @@ impl Transform {
             && !self.flip_h
             && !self.flip_v
     }
+}
+
+/// How a clip is fitted into the project canvas when a non-`Original`
+/// [`AspectPreset`] is active.
+#[derive(Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum FitMode {
+    /// Scale to cover the canvas, cropping the overflowing edges (no bars).
+    #[default]
+    Fill,
+    /// Scale to fit inside the canvas, letterboxing/pillarboxing with black bars.
+    Fit,
+}
+
+/// Project-level output aspect ratio. `Original` keeps each clip's own framing
+/// (no reframe); the others re-frame the whole project to a social format using
+/// 1080-based canvas dimensions.
+#[derive(Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum AspectPreset {
+    /// No reframe — clips keep their source framing (existing behaviour).
+    #[default]
+    Original,
+    /// 16:9 landscape (1920×1080).
+    Widescreen16x9,
+    /// 9:16 vertical (1080×1920).
+    Vertical9x16,
+    /// 1:1 square (1080×1080).
+    Square1x1,
+    /// 4:5 portrait (1080×1350).
+    Portrait4x5,
+}
+
+impl AspectPreset {
+    /// Target canvas dimensions, or `None` for `Original` (no reframe).
+    pub fn dims(self) -> Option<(u32, u32)> {
+        match self {
+            AspectPreset::Original => None,
+            AspectPreset::Widescreen16x9 => Some((1920, 1080)),
+            AspectPreset::Vertical9x16 => Some((1080, 1920)),
+            AspectPreset::Square1x1 => Some((1080, 1080)),
+            AspectPreset::Portrait4x5 => Some((1080, 1350)),
+        }
+    }
+
+    /// Short label for the aspect selector.
+    pub fn label(self) -> &'static str {
+        match self {
+            AspectPreset::Original => "Original",
+            AspectPreset::Widescreen16x9 => "16:9",
+            AspectPreset::Vertical9x16 => "9:16",
+            AspectPreset::Square1x1 => "1:1",
+            AspectPreset::Portrait4x5 => "4:5",
+        }
+    }
+
+    /// All presets, in menu order.
+    pub const ALL: [AspectPreset; 5] = [
+        AspectPreset::Original,
+        AspectPreset::Widescreen16x9,
+        AspectPreset::Vertical9x16,
+        AspectPreset::Square1x1,
+        AspectPreset::Portrait4x5,
+    ];
 }
 
 #[derive(Clone, PartialEq)]
