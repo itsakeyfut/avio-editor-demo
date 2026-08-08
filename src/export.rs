@@ -72,6 +72,8 @@ pub struct ExportClip {
     pub transform: crate::state::Transform,
     /// Per-clip image overlay (watermark / logo).
     pub overlay: crate::state::Overlay,
+    /// Per-clip burned-in subtitle (SRT / ASS).
+    pub subtitle: crate::state::Subtitle,
 }
 
 /// Send-safe snapshot of all timeline tracks, constructed on the main thread
@@ -563,6 +565,44 @@ pub fn apply_overlay(clip: avio::Clip, overlay: &crate::state::Overlay) -> avio:
     })
 }
 
+/// Builds the ASS `force_style` string for an SRT subtitle from the demo's style
+/// fields: font size, primary colour (ASS `&H00BBGGRR&`, opaque), and alignment.
+fn build_force_style(sub: &crate::state::Subtitle) -> String {
+    let [r, g, b] = sub.colour;
+    format!(
+        "Fontsize={fs},PrimaryColour=&H00{b:02X}{g:02X}{r:02X}&,Alignment={a}",
+        fs = sub.font_size,
+        a = sub.position.ass_alignment(),
+    )
+}
+
+/// Attaches a per-clip burned-in subtitle as an avio `FilterStep::SubtitlesSrt` /
+/// `SubtitlesAss`, applied *after* [`apply_overlay`] so it sits on top of the final
+/// framed image. No-op when no subtitle file is set. SRT carries a `force_style`
+/// built from the demo's font size / colour / position; ASS uses the file's own
+/// styles (style fields ignored). Shared by export and the timeline preview.
+///
+/// Subtitle timing is clip-relative (the subtitle's `t=0` aligns to this clip's
+/// start), since avio applies it in the per-clip effect chain — a global timeline
+/// subtitle source with preview is an avio limitation (see docs/issue74.md).
+pub fn apply_subtitle(clip: avio::Clip, sub: &crate::state::Subtitle) -> avio::Clip {
+    let Some(path) = &sub.path else {
+        return clip;
+    };
+    let path = path.to_string_lossy().into_owned();
+    match sub.format {
+        crate::state::SubtitleFormat::Srt => {
+            clip.with_video_effect(avio::FilterStep::SubtitlesSrt {
+                path,
+                force_style: Some(build_force_style(sub)),
+            })
+        }
+        crate::state::SubtitleFormat::Ass => {
+            clip.with_video_effect(avio::FilterStep::SubtitlesAss { path })
+        }
+    }
+}
+
 fn clips_to_avio(clips: Vec<ExportClip>, canvas: Option<(u32, u32)>) -> Vec<avio::Clip> {
     clips
         .into_iter()
@@ -641,6 +681,9 @@ fn clips_to_avio(clips: Vec<ExportClip>, canvas: Option<(u32, u32)>) -> Vec<avio
             // image, so its position resolves against the output canvas. Shared
             // with the preview. No-op when no overlay image is set.
             let clip = apply_overlay(clip, &c.overlay);
+            // Burned-in subtitle — on top of the overlay. Shared with the preview.
+            // No-op when no subtitle file is set.
+            let clip = apply_subtitle(clip, &c.subtitle);
             #[allow(clippy::float_cmp)]
             let clip = if c.opacity != 1.0 {
                 clip.with_opacity(c.opacity)
@@ -1624,6 +1667,63 @@ mod tests {
                 assert_eq!(height.as_deref(), Some("ih*0.5"));
             }
             other => panic!("expected OverlayImage, got {other:?}"),
+        }
+    }
+
+    /// A subtitle with no path attaches no step.
+    #[test]
+    fn subtitle_none_produces_no_step() {
+        use super::apply_subtitle;
+
+        let sub = crate::state::Subtitle::default();
+        let steps = apply_subtitle(avio::Clip::new("test.mp4"), &sub).video_effect_chain();
+        assert!(steps.is_empty());
+    }
+
+    /// An SRT subtitle emits `SubtitlesSrt` with a force_style built from the
+    /// font size / colour / position.
+    #[test]
+    fn subtitle_srt_emits_force_style() {
+        use super::apply_subtitle;
+        use crate::state::{Subtitle, SubtitleFormat, SubtitlePosition};
+
+        let sub = Subtitle {
+            path: Some(std::path::PathBuf::from("ep1.srt")),
+            format: SubtitleFormat::Srt,
+            font_size: 28,
+            colour: [255, 0, 0], // red → BGR &H000000FF&
+            position: SubtitlePosition::Top,
+        };
+        let steps = apply_subtitle(avio::Clip::new("test.mp4"), &sub).video_effect_chain();
+        assert_eq!(steps.len(), 1);
+        match &steps[0] {
+            avio::FilterStep::SubtitlesSrt { path, force_style } => {
+                assert_eq!(path, "ep1.srt");
+                let fs = force_style.as_deref().expect("force_style");
+                assert!(fs.contains("Fontsize=28"));
+                assert!(fs.contains("PrimaryColour=&H000000FF&")); // BGR of red
+                assert!(fs.contains("Alignment=8")); // Top
+            }
+            other => panic!("expected SubtitlesSrt, got {other:?}"),
+        }
+    }
+
+    /// An ASS subtitle emits `SubtitlesAss` (no force_style; embedded styles).
+    #[test]
+    fn subtitle_ass_emits_ass_step() {
+        use super::apply_subtitle;
+        use crate::state::{Subtitle, SubtitleFormat};
+
+        let sub = Subtitle {
+            path: Some(std::path::PathBuf::from("ep1.ass")),
+            format: SubtitleFormat::Ass,
+            ..Default::default()
+        };
+        let steps = apply_subtitle(avio::Clip::new("test.mp4"), &sub).video_effect_chain();
+        assert_eq!(steps.len(), 1);
+        match &steps[0] {
+            avio::FilterStep::SubtitlesAss { path } => assert_eq!(path, "ep1.ass"),
+            other => panic!("expected SubtitlesAss, got {other:?}"),
         }
     }
 

@@ -415,6 +415,85 @@ pub fn show_inspector(state: &mut state::AppState, ui: &mut egui::Ui) {
                         .on_hover_text("Overlay size as a percentage of the image's native size.");
                     });
                         });
+                    egui::CollapsingHeader::new("Subtitles")
+                        .id_salt("clip_subtitles")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let name = clip
+                            .subtitle
+                            .path
+                            .as_ref()
+                            .and_then(|p| p.file_name())
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("(none)")
+                            .to_owned();
+                        if ui.button("Choose SRT/ASS…").clicked()
+                            && let Some(path) = rfd::FileDialog::new()
+                                .add_filter("Subtitles", &["srt", "ass", "ssa"])
+                                .pick_file()
+                        {
+                            let ext = path
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .unwrap_or("")
+                                .to_ascii_lowercase();
+                            clip.subtitle.format = if ext == "ass" || ext == "ssa" {
+                                state::SubtitleFormat::Ass
+                            } else {
+                                state::SubtitleFormat::Srt
+                            };
+                            clip.subtitle.path = Some(path);
+                        }
+                        if ui
+                            .add_enabled(clip.subtitle.is_active(), egui::Button::new("Remove"))
+                            .clicked()
+                        {
+                            clip.subtitle.path = None;
+                        }
+                        ui.label(name);
+                    });
+                    if clip.subtitle.is_active() {
+                        match clip.subtitle.format {
+                            state::SubtitleFormat::Srt => {
+                                ui.horizontal(|ui| {
+                                    ui.label("Font size");
+                                    ui.add(
+                                        egui::DragValue::new(&mut clip.subtitle.font_size)
+                                            .range(8..=200),
+                                    );
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("Colour");
+                                    ui.color_edit_button_srgb(&mut clip.subtitle.colour);
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("Position");
+                                    egui::ComboBox::from_id_salt("clip_subtitle_pos")
+                                        .selected_text(clip.subtitle.position.label())
+                                        .show_ui(ui, |ui| {
+                                            for pos in state::SubtitlePosition::ALL {
+                                                ui.selectable_value(
+                                                    &mut clip.subtitle.position,
+                                                    pos,
+                                                    pos.label(),
+                                                );
+                                            }
+                                        });
+                                });
+                            }
+                            state::SubtitleFormat::Ass => {
+                                ui.weak(
+                                    "ASS/SSA uses the file's embedded styles \
+                                     (font / colour / position ignored).",
+                                );
+                            }
+                        }
+                    }
+                    ui.weak(
+                        "Burned in per clip — subtitle timing is relative to this clip's start.",
+                    );
+                        });
                     egui::CollapsingHeader::new("Color Grading")
                         .id_salt("clip_color_grading")
                         .default_open(true)
@@ -793,6 +872,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         video_effects: tc.video_effects,
                         transform: tc.transform,
                         overlay: tc.overlay.clone(),
+                        subtitle: tc.subtitle.clone(),
                     }
                 };
                 let tracks = &state.timeline.tracks;
@@ -1272,6 +1352,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 video_effects: tc.video_effects,
                 transform: tc.transform,
                 overlay: tc.overlay.clone(),
+                subtitle: tc.subtitle.clone(),
             };
             let tracks = &state.timeline.tracks;
             let audio_start = state.timeline.audio_track_start();
@@ -1363,6 +1444,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                             video_effects: tc.video_effects,
                             transform: tc.transform,
                             overlay: tc.overlay.clone(),
+                            subtitle: tc.subtitle.clone(),
                         };
                         let tracks = &state.timeline.tracks;
                         let audio_start = state.timeline.audio_track_start();
@@ -3199,6 +3281,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 video_effects: tc.video_effects,
                 transform: tc.transform,
                 overlay: tc.overlay.clone(),
+                subtitle: tc.subtitle.clone(),
             };
             let tracks = &state.timeline.tracks;
             let audio_start = state.timeline.audio_track_start();
@@ -3300,6 +3383,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             video_effects: state::VideoEffects::default(),
             transform: state::Transform::default(),
             overlay: state::Overlay::default(),
+            subtitle: state::Subtitle::default(),
         };
         // Sorted insert so that out-of-order drops don't corrupt array order.
         let track = &mut state.timeline.tracks[track_idx].clips;
@@ -3443,6 +3527,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 video_effects: state.timeline.tracks[ti].clips[ci].video_effects,
                 transform: state.timeline.tracks[ti].clips[ci].transform,
                 overlay: state.timeline.tracks[ti].clips[ci].overlay.clone(),
+                subtitle: state.timeline.tracks[ti].clips[ci].subtitle.clone(),
             };
             state.timeline.tracks[ti].clips.insert(ci + 1, right);
         }

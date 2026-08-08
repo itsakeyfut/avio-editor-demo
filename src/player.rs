@@ -63,6 +63,8 @@ pub struct TrackClipData {
     pub transform: crate::state::Transform,
     /// Per-clip image overlay (watermark / logo).
     pub overlay: crate::state::Overlay,
+    /// Per-clip burned-in subtitle (SRT / ASS).
+    pub subtitle: crate::state::Subtitle,
 }
 
 // ── EguiFrameSink ─────────────────────────────────────────────────────────────
@@ -480,8 +482,10 @@ pub fn spawn_timeline_player(
                     ch,
                 );
             }
-            // Image overlay (watermark / logo) — final video step, matches export.
+            // Image overlay (watermark / logo) — matches export.
             c = crate::export::apply_overlay(c, &tc.overlay);
+            // Burned-in subtitle — on top of the overlay, matches export.
+            c = crate::export::apply_subtitle(c, &tc.subtitle);
             #[allow(clippy::float_cmp)]
             if tc.opacity != 1.0 {
                 c = c.with_opacity(tc.opacity);
