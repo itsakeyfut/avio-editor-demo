@@ -61,6 +61,8 @@ pub struct TrackClipData {
     pub video_effects: crate::state::VideoEffects,
     /// Per-clip geometric transform (crop / rotate / flip).
     pub transform: crate::state::Transform,
+    /// Per-clip image overlay (watermark / logo).
+    pub overlay: crate::state::Overlay,
 }
 
 // ── EguiFrameSink ─────────────────────────────────────────────────────────────
@@ -478,6 +480,8 @@ pub fn spawn_timeline_player(
                     ch,
                 );
             }
+            // Image overlay (watermark / logo) — final video step, matches export.
+            c = crate::export::apply_overlay(c, &tc.overlay);
             #[allow(clippy::float_cmp)]
             if tc.opacity != 1.0 {
                 c = c.with_opacity(tc.opacity);

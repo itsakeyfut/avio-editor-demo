@@ -338,6 +338,77 @@ pub fn show_inspector(state: &mut state::AppState, ui: &mut egui::Ui) {
                          Fill covers and crops; Fit letterboxes. No effect when Aspect is Original.",
                     );
                         });
+                    egui::CollapsingHeader::new("Overlay")
+                        .id_salt("clip_overlay")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let name = clip
+                            .overlay
+                            .path
+                            .as_ref()
+                            .and_then(|p| p.file_name())
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("(none)")
+                            .to_owned();
+                        if ui.button("Choose PNG…").clicked()
+                            && let Some(path) = rfd::FileDialog::new()
+                                .add_filter("PNG image", &["png"])
+                                .pick_file()
+                        {
+                            clip.overlay.path = Some(path);
+                        }
+                        if ui
+                            .add_enabled(clip.overlay.is_active(), egui::Button::new("Remove"))
+                            .clicked()
+                        {
+                            clip.overlay.path = None;
+                        }
+                        ui.label(name);
+                    });
+                    ui.add_enabled_ui(clip.overlay.is_active(), |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Position");
+                            egui::ComboBox::from_id_salt("clip_overlay_pos")
+                                .selected_text(clip.overlay.position.label())
+                                .show_ui(ui, |ui| {
+                                    for pos in state::OverlayPosition::ALL {
+                                        ui.selectable_value(
+                                            &mut clip.overlay.position,
+                                            pos,
+                                            pos.label(),
+                                        );
+                                    }
+                                });
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Margin");
+                            ui.add(
+                                egui::DragValue::new(&mut clip.overlay.margin)
+                                    .range(0..=500)
+                                    .suffix(" px"),
+                            );
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Opacity");
+                            let mut opacity_pct = clip.overlay.opacity * 100.0;
+                            if ui
+                                .add(
+                                    egui::Slider::new(&mut opacity_pct, 0.0..=100.0)
+                                        .suffix(" %")
+                                        .fixed_decimals(0),
+                                )
+                                .changed()
+                            {
+                                clip.overlay.opacity = (opacity_pct / 100.0).clamp(0.0, 1.0);
+                            }
+                        });
+                    });
+                    ui.weak(
+                        "PNG is composited at its native pixel size — avio has no overlay \
+                         scale, so resize the source PNG to change its size.",
+                    );
+                        });
                     egui::CollapsingHeader::new("Color Grading")
                         .id_salt("clip_color_grading")
                         .default_open(true)
@@ -715,6 +786,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         wheels: tc.wheels,
                         video_effects: tc.video_effects,
                         transform: tc.transform,
+                        overlay: tc.overlay.clone(),
                     }
                 };
                 let tracks = &state.timeline.tracks;
@@ -1193,6 +1265,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 wheels: tc.wheels,
                 video_effects: tc.video_effects,
                 transform: tc.transform,
+                overlay: tc.overlay.clone(),
             };
             let tracks = &state.timeline.tracks;
             let audio_start = state.timeline.audio_track_start();
@@ -1283,6 +1356,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                             wheels: tc.wheels,
                             video_effects: tc.video_effects,
                             transform: tc.transform,
+                            overlay: tc.overlay.clone(),
                         };
                         let tracks = &state.timeline.tracks;
                         let audio_start = state.timeline.audio_track_start();
@@ -3118,6 +3192,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 wheels: tc.wheels,
                 video_effects: tc.video_effects,
                 transform: tc.transform,
+                overlay: tc.overlay.clone(),
             };
             let tracks = &state.timeline.tracks;
             let audio_start = state.timeline.audio_track_start();
@@ -3218,6 +3293,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             wheels: state::ColorWheels::default(),
             video_effects: state::VideoEffects::default(),
             transform: state::Transform::default(),
+            overlay: state::Overlay::default(),
         };
         // Sorted insert so that out-of-order drops don't corrupt array order.
         let track = &mut state.timeline.tracks[track_idx].clips;
@@ -3360,6 +3436,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 wheels: state.timeline.tracks[ti].clips[ci].wheels,
                 video_effects: state.timeline.tracks[ti].clips[ci].video_effects,
                 transform: state.timeline.tracks[ti].clips[ci].transform,
+                overlay: state.timeline.tracks[ti].clips[ci].overlay.clone(),
             };
             state.timeline.tracks[ti].clips.insert(ci + 1, right);
         }
