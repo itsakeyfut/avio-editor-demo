@@ -792,6 +792,10 @@ pub struct Overlay {
     /// Opacity `0.0` (transparent)..=`1.0` (opaque).
     #[serde(default = "default_overlay_opacity")]
     pub opacity: f32,
+    /// Overlay size as a percentage of the image's native size. `100.0` = native
+    /// (no scaling). Mapped to avio `OverlayImage` `width`/`height` scale exprs.
+    #[serde(default = "default_overlay_scale")]
+    pub scale: f32,
 }
 
 fn default_overlay_margin() -> u32 {
@@ -802,6 +806,10 @@ fn default_overlay_opacity() -> f32 {
     1.0
 }
 
+fn default_overlay_scale() -> f32 {
+    100.0
+}
+
 impl Default for Overlay {
     fn default() -> Self {
         Self {
@@ -809,6 +817,7 @@ impl Default for Overlay {
             position: OverlayPosition::default(),
             margin: default_overlay_margin(),
             opacity: default_overlay_opacity(),
+            scale: default_overlay_scale(),
         }
     }
 }

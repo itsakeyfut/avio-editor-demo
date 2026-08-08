@@ -403,11 +403,17 @@ pub fn show_inspector(state: &mut state::AppState, ui: &mut egui::Ui) {
                                 clip.overlay.opacity = (opacity_pct / 100.0).clamp(0.0, 1.0);
                             }
                         });
+                        ui.horizontal(|ui| {
+                            ui.label("Scale");
+                            ui.add(
+                                egui::Slider::new(&mut clip.overlay.scale, 10.0..=300.0)
+                                    .suffix(" %")
+                                    .fixed_decimals(0),
+                            );
+                        })
+                        .response
+                        .on_hover_text("Overlay size as a percentage of the image's native size.");
                     });
-                    ui.weak(
-                        "PNG is composited at its native pixel size — avio has no overlay \
-                         scale, so resize the source PNG to change its size.",
-                    );
                         });
                     egui::CollapsingHeader::new("Color Grading")
                         .id_salt("clip_color_grading")

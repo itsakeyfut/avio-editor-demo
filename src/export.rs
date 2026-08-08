@@ -537,22 +537,29 @@ pub fn apply_aspect(
 /// against the output canvas dimensions. No-op when no overlay image is set.
 /// Shared by export and the timeline preview so both match.
 ///
-/// avio's `OverlayImage` has no scale for the overlay image, so the PNG is
-/// composited at its native resolution (avio gap — docs/issue71.md).
+/// `scale` (percent of the image's native size) is mapped to avio's
+/// `OverlayImage` `width`/`height` scale expressions (`iw*f`/`ih*f`); `100%`
+/// keeps the native size (no scale node).
+#[allow(clippy::float_cmp)]
 pub fn apply_overlay(clip: avio::Clip, overlay: &crate::state::Overlay) -> avio::Clip {
     let Some(path) = &overlay.path else {
         return clip;
     };
     let (x, y) = overlay.position.to_exprs(overlay.margin);
+    // Uniform scale about the native size; None keeps the native resolution.
+    let (width, height) = if overlay.scale > 0.0 && overlay.scale != 100.0 {
+        let f = overlay.scale / 100.0;
+        (Some(format!("iw*{f}")), Some(format!("ih*{f}")))
+    } else {
+        (None, None)
+    };
     clip.with_video_effect(avio::FilterStep::OverlayImage {
         path: path.to_string_lossy().into_owned(),
         x,
         y,
         opacity: overlay.opacity.clamp(0.0, 1.0),
-        // avio now supports an overlay-image scale, but the demo composites the
-        // PNG at its native size (no scale control) — see docs/issue71.md.
-        width: None,
-        height: None,
+        width,
+        height,
     })
 }
 
@@ -1571,6 +1578,7 @@ mod tests {
             position: OverlayPosition::BottomRight,
             margin: 20,
             opacity: 0.5,
+            scale: 100.0,
         };
         let steps = apply_overlay(avio::Clip::new("test.mp4"), &overlay).video_effect_chain();
         assert_eq!(steps.len(), 1);
@@ -1587,8 +1595,33 @@ mod tests {
                 assert_eq!(x, "W-w-20");
                 assert_eq!(y, "H-h-20");
                 assert_eq!(*opacity, 0.5);
+                // 100% scale keeps the native size — no scale exprs.
                 assert!(width.is_none());
                 assert!(height.is_none());
+            }
+            other => panic!("expected OverlayImage, got {other:?}"),
+        }
+    }
+
+    /// A non-100% scale maps to uniform `iw*f` / `ih*f` scale expressions.
+    #[test]
+    fn overlay_scale_maps_to_size_exprs() {
+        use super::apply_overlay;
+        use crate::state::{Overlay, OverlayPosition};
+
+        let overlay = Overlay {
+            path: Some(std::path::PathBuf::from("logo.png")),
+            position: OverlayPosition::TopLeft,
+            margin: 10,
+            opacity: 1.0,
+            scale: 50.0,
+        };
+        let steps = apply_overlay(avio::Clip::new("test.mp4"), &overlay).video_effect_chain();
+        assert_eq!(steps.len(), 1);
+        match &steps[0] {
+            avio::FilterStep::OverlayImage { width, height, .. } => {
+                assert_eq!(width.as_deref(), Some("iw*0.5"));
+                assert_eq!(height.as_deref(), Some("ih*0.5"));
             }
             other => panic!("expected OverlayImage, got {other:?}"),
         }
