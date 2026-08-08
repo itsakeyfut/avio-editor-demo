@@ -829,6 +829,102 @@ impl Overlay {
     }
 }
 
+/// Subtitle file format, inferred from the picked file's extension.
+#[derive(Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum SubtitleFormat {
+    /// `.srt` — burned via the `subtitles` filter; supports style overrides.
+    #[default]
+    Srt,
+    /// `.ass` / `.ssa` — burned via the `ass` filter with the file's own styles.
+    Ass,
+}
+
+/// Vertical anchor for SRT subtitle text (maps to the ASS `Alignment` value).
+#[derive(Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum SubtitlePosition {
+    /// Bottom-centre (ASS Alignment 2).
+    #[default]
+    Bottom,
+    /// Middle-centre (ASS Alignment 5).
+    Middle,
+    /// Top-centre (ASS Alignment 8).
+    Top,
+}
+
+impl SubtitlePosition {
+    /// ASS `Alignment` value (numpad convention: 2=bottom, 5=middle, 8=top; all centred).
+    pub fn ass_alignment(self) -> u8 {
+        match self {
+            SubtitlePosition::Bottom => 2,
+            SubtitlePosition::Middle => 5,
+            SubtitlePosition::Top => 8,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SubtitlePosition::Bottom => "Bottom",
+            SubtitlePosition::Middle => "Middle",
+            SubtitlePosition::Top => "Top",
+        }
+    }
+
+    pub const ALL: [SubtitlePosition; 3] = [
+        SubtitlePosition::Bottom,
+        SubtitlePosition::Middle,
+        SubtitlePosition::Top,
+    ];
+}
+
+/// Per-clip burned-in subtitle. Neutral when `path` is `None`. Applied via avio
+/// `FilterStep::SubtitlesSrt` / `SubtitlesAss` in the clip effect chain, so it
+/// shows identically in the preview and the export. The style fields (font size /
+/// colour / position) apply to **SRT only** — ASS files carry their own styles.
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Subtitle {
+    /// Path to the `.srt` / `.ass` file. `None` = no subtitle.
+    pub path: Option<PathBuf>,
+    /// Format inferred from the file extension.
+    #[serde(default)]
+    pub format: SubtitleFormat,
+    /// Font size in the subtitle script's units (SRT force_style `Fontsize`).
+    #[serde(default = "default_subtitle_font_size")]
+    pub font_size: u32,
+    /// Text colour (SRT force_style `PrimaryColour`). Default white.
+    #[serde(default = "default_subtitle_colour")]
+    pub colour: [u8; 3],
+    /// Vertical position (SRT force_style `Alignment`).
+    #[serde(default)]
+    pub position: SubtitlePosition,
+}
+
+fn default_subtitle_font_size() -> u32 {
+    24
+}
+
+fn default_subtitle_colour() -> [u8; 3] {
+    [255, 255, 255]
+}
+
+impl Default for Subtitle {
+    fn default() -> Self {
+        Self {
+            path: None,
+            format: SubtitleFormat::default(),
+            font_size: default_subtitle_font_size(),
+            colour: default_subtitle_colour(),
+            position: SubtitlePosition::default(),
+        }
+    }
+}
+
+impl Subtitle {
+    /// `true` when a subtitle file is set.
+    pub fn is_active(&self) -> bool {
+        self.path.is_some()
+    }
+}
+
 #[derive(Clone, PartialEq)]
 pub struct TimelineClip {
     pub source_index: usize,
@@ -905,6 +1001,8 @@ pub struct TimelineClip {
     pub transform: Transform,
     /// Per-clip image overlay (watermark / logo). Default: none.
     pub overlay: Overlay,
+    /// Per-clip burned-in subtitle (SRT / ASS). Default: none.
+    pub subtitle: Subtitle,
 }
 
 pub struct TimelineState {
