@@ -423,6 +423,12 @@ fn show_frame_fitted(
     let scale = (video_size.x / tex_size.x).min(video_size.y / tex_size.y);
     let disp = tex_size * scale;
     let img_rect = egui::Rect::from_center_size(area.center(), disp);
+    // Fill the frame rect with black before painting the (possibly alpha-carrying)
+    // frame, so transparent areas — e.g. from a chroma key / mask on a base clip —
+    // composite over black, matching the export's black canvas. Without this the
+    // egui panel background shows through and preview ≠ export.
+    ui.painter()
+        .rect_filled(img_rect, 0.0, egui::Color32::BLACK);
     egui::Image::new(egui::load::SizedTexture::new(tex.id(), disp)).paint_at(ui, img_rect);
     img_rect
 }
