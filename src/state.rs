@@ -687,6 +687,139 @@ impl AspectPreset {
     ];
 }
 
+/// Anchor position of an image overlay on the frame.
+#[derive(Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum OverlayPosition {
+    TopLeft,
+    TopCentre,
+    TopRight,
+    MiddleLeft,
+    Centre,
+    MiddleRight,
+    BottomLeft,
+    BottomCentre,
+    /// Default anchor for a watermark / logo.
+    #[default]
+    BottomRight,
+}
+
+impl OverlayPosition {
+    /// Short label for the position selector.
+    pub fn label(self) -> &'static str {
+        match self {
+            OverlayPosition::TopLeft => "Top Left",
+            OverlayPosition::TopCentre => "Top Centre",
+            OverlayPosition::TopRight => "Top Right",
+            OverlayPosition::MiddleLeft => "Middle Left",
+            OverlayPosition::Centre => "Centre",
+            OverlayPosition::MiddleRight => "Middle Right",
+            OverlayPosition::BottomLeft => "Bottom Left",
+            OverlayPosition::BottomCentre => "Bottom Centre",
+            OverlayPosition::BottomRight => "Bottom Right",
+        }
+    }
+
+    /// All positions, in selector order.
+    pub const ALL: [OverlayPosition; 9] = [
+        OverlayPosition::TopLeft,
+        OverlayPosition::TopCentre,
+        OverlayPosition::TopRight,
+        OverlayPosition::MiddleLeft,
+        OverlayPosition::Centre,
+        OverlayPosition::MiddleRight,
+        OverlayPosition::BottomLeft,
+        OverlayPosition::BottomCentre,
+        OverlayPosition::BottomRight,
+    ];
+
+    /// FFmpeg `overlay` `x`/`y` position expressions for this anchor and `margin`
+    /// (in pixels). `W`/`H` are the main-frame dimensions, `w`/`h` the overlay's.
+    pub fn to_exprs(self, margin: u32) -> (String, String) {
+        let (col, row) = self.col_row();
+        let x = match col {
+            Col::Left => margin.to_string(),
+            Col::Centre => "(W-w)/2".to_string(),
+            Col::Right => format!("W-w-{margin}"),
+        };
+        let y = match row {
+            Row::Top => margin.to_string(),
+            Row::Middle => "(H-h)/2".to_string(),
+            Row::Bottom => format!("H-h-{margin}"),
+        };
+        (x, y)
+    }
+
+    fn col_row(self) -> (Col, Row) {
+        match self {
+            OverlayPosition::TopLeft => (Col::Left, Row::Top),
+            OverlayPosition::TopCentre => (Col::Centre, Row::Top),
+            OverlayPosition::TopRight => (Col::Right, Row::Top),
+            OverlayPosition::MiddleLeft => (Col::Left, Row::Middle),
+            OverlayPosition::Centre => (Col::Centre, Row::Middle),
+            OverlayPosition::MiddleRight => (Col::Right, Row::Middle),
+            OverlayPosition::BottomLeft => (Col::Left, Row::Bottom),
+            OverlayPosition::BottomCentre => (Col::Centre, Row::Bottom),
+            OverlayPosition::BottomRight => (Col::Right, Row::Bottom),
+        }
+    }
+}
+
+enum Col {
+    Left,
+    Centre,
+    Right,
+}
+enum Row {
+    Top,
+    Middle,
+    Bottom,
+}
+
+/// Per-clip image overlay (watermark / logo). Neutral when `path` is `None`.
+/// The image is composited via avio `FilterStep::OverlayImage` at the anchored
+/// position with the given opacity. avio has no scale for the overlay image, so
+/// the PNG is placed at its native resolution (avio gap — docs/issue71.md).
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Overlay {
+    /// PNG file path. `None` = no overlay.
+    pub path: Option<PathBuf>,
+    /// Anchor position on the frame.
+    #[serde(default)]
+    pub position: OverlayPosition,
+    /// Margin from the anchored edges, in pixels.
+    #[serde(default = "default_overlay_margin")]
+    pub margin: u32,
+    /// Opacity `0.0` (transparent)..=`1.0` (opaque).
+    #[serde(default = "default_overlay_opacity")]
+    pub opacity: f32,
+}
+
+fn default_overlay_margin() -> u32 {
+    20
+}
+
+fn default_overlay_opacity() -> f32 {
+    1.0
+}
+
+impl Default for Overlay {
+    fn default() -> Self {
+        Self {
+            path: None,
+            position: OverlayPosition::default(),
+            margin: default_overlay_margin(),
+            opacity: default_overlay_opacity(),
+        }
+    }
+}
+
+impl Overlay {
+    /// `true` when an overlay image is set.
+    pub fn is_active(&self) -> bool {
+        self.path.is_some()
+    }
+}
+
 #[derive(Clone, PartialEq)]
 pub struct TimelineClip {
     pub source_index: usize,
@@ -761,6 +894,8 @@ pub struct TimelineClip {
     pub video_effects: VideoEffects,
     /// Per-clip geometric transform (crop / rotate / flip). Default: neutral.
     pub transform: Transform,
+    /// Per-clip image overlay (watermark / logo). Default: none.
+    pub overlay: Overlay,
 }
 
 pub struct TimelineState {

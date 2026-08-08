@@ -70,6 +70,8 @@ pub struct ExportClip {
     pub video_effects: crate::state::VideoEffects,
     /// Per-clip geometric transform (crop / rotate / flip).
     pub transform: crate::state::Transform,
+    /// Per-clip image overlay (watermark / logo).
+    pub overlay: crate::state::Overlay,
 }
 
 /// Send-safe snapshot of all timeline tracks, constructed on the main thread
@@ -529,6 +531,31 @@ pub fn apply_aspect(
     }
 }
 
+/// Attaches a per-clip image overlay (watermark / logo) as an avio
+/// `FilterStep::OverlayImage`, applied *after* [`apply_aspect`] so the overlay
+/// composites onto the final framed image and its position expressions resolve
+/// against the output canvas dimensions. No-op when no overlay image is set.
+/// Shared by export and the timeline preview so both match.
+///
+/// avio's `OverlayImage` has no scale for the overlay image, so the PNG is
+/// composited at its native resolution (avio gap — docs/issue71.md).
+pub fn apply_overlay(clip: avio::Clip, overlay: &crate::state::Overlay) -> avio::Clip {
+    let Some(path) = &overlay.path else {
+        return clip;
+    };
+    let (x, y) = overlay.position.to_exprs(overlay.margin);
+    clip.with_video_effect(avio::FilterStep::OverlayImage {
+        path: path.to_string_lossy().into_owned(),
+        x,
+        y,
+        opacity: overlay.opacity.clamp(0.0, 1.0),
+        // avio now supports an overlay-image scale, but the demo composites the
+        // PNG at its native size (no scale control) — see docs/issue71.md.
+        width: None,
+        height: None,
+    })
+}
+
 fn clips_to_avio(clips: Vec<ExportClip>, canvas: Option<(u32, u32)>) -> Vec<avio::Clip> {
     clips
         .into_iter()
@@ -603,6 +630,10 @@ fn clips_to_avio(clips: Vec<ExportClip>, canvas: Option<(u32, u32)>) -> Vec<avio
                 }
                 None => clip,
             };
+            // Image overlay (watermark / logo) — composited on the final framed
+            // image, so its position resolves against the output canvas. Shared
+            // with the preview. No-op when no overlay image is set.
+            let clip = apply_overlay(clip, &c.overlay);
             #[allow(clippy::float_cmp)]
             let clip = if c.opacity != 1.0 {
                 clip.with_opacity(c.opacity)
@@ -1516,5 +1547,73 @@ mod tests {
             }
             other => panic!("expected Scale, got {other:?}"),
         }
+    }
+
+    /// An overlay with no image path attaches no step.
+    #[test]
+    fn overlay_none_produces_no_step() {
+        use super::apply_overlay;
+
+        let overlay = crate::state::Overlay::default();
+        let steps = apply_overlay(avio::Clip::new("test.mp4"), &overlay).video_effect_chain();
+        assert!(steps.is_empty());
+    }
+
+    /// A bottom-right overlay emits an `OverlayImage` with margin-offset position
+    /// expressions and the opacity carried through.
+    #[test]
+    fn overlay_emits_overlay_image_bottom_right() {
+        use super::apply_overlay;
+        use crate::state::{Overlay, OverlayPosition};
+
+        let overlay = Overlay {
+            path: Some(std::path::PathBuf::from("logo.png")),
+            position: OverlayPosition::BottomRight,
+            margin: 20,
+            opacity: 0.5,
+        };
+        let steps = apply_overlay(avio::Clip::new("test.mp4"), &overlay).video_effect_chain();
+        assert_eq!(steps.len(), 1);
+        match &steps[0] {
+            avio::FilterStep::OverlayImage {
+                path,
+                x,
+                y,
+                opacity,
+                width,
+                height,
+            } => {
+                assert_eq!(path, "logo.png");
+                assert_eq!(x, "W-w-20");
+                assert_eq!(y, "H-h-20");
+                assert_eq!(*opacity, 0.5);
+                assert!(width.is_none());
+                assert!(height.is_none());
+            }
+            other => panic!("expected OverlayImage, got {other:?}"),
+        }
+    }
+
+    /// Anchor positions map to the expected FFmpeg `overlay` x/y expressions.
+    #[test]
+    fn overlay_position_exprs() {
+        use crate::state::OverlayPosition;
+
+        assert_eq!(
+            OverlayPosition::TopLeft.to_exprs(10),
+            ("10".to_string(), "10".to_string())
+        );
+        assert_eq!(
+            OverlayPosition::Centre.to_exprs(10),
+            ("(W-w)/2".to_string(), "(H-h)/2".to_string())
+        );
+        assert_eq!(
+            OverlayPosition::TopRight.to_exprs(30),
+            ("W-w-30".to_string(), "30".to_string())
+        );
+        assert_eq!(
+            OverlayPosition::BottomCentre.to_exprs(15),
+            ("(W-w)/2".to_string(), "H-h-15".to_string())
+        );
     }
 }
