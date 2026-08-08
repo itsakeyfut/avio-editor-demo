@@ -65,6 +65,8 @@ pub struct TrackClipData {
     pub overlay: crate::state::Overlay,
     /// Per-clip burned-in subtitle (SRT / ASS).
     pub subtitle: crate::state::Subtitle,
+    /// Per-clip chroma key (green/blue screen).
+    pub keying: crate::state::Keying,
 }
 
 // ── EguiFrameSink ─────────────────────────────────────────────────────────────
@@ -442,6 +444,9 @@ pub fn spawn_timeline_player(
             if let Some(kind) = tc.transition {
                 c = c.with_transition(kind, tc.transition_duration);
             }
+            // Chroma key first — key original colours before transform/grade,
+            // producing alpha the composer reveals through. Matches export.
+            c = crate::export::apply_keying(c, &tc.keying);
             // Geometric transform (crop → flip → rotate) applied before the grade,
             // matching export so the monitor reflects the rendered geometry.
             c = crate::export::apply_transform(c, &tc.transform, tc.width, tc.height);

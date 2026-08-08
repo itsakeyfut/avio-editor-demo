@@ -74,6 +74,8 @@ pub struct ExportClip {
     pub overlay: crate::state::Overlay,
     /// Per-clip burned-in subtitle (SRT / ASS).
     pub subtitle: crate::state::Subtitle,
+    /// Per-clip chroma key (green/blue screen).
+    pub keying: crate::state::Keying,
 }
 
 /// Send-safe snapshot of all timeline tracks, constructed on the main thread
@@ -603,6 +605,43 @@ pub fn apply_subtitle(clip: avio::Clip, sub: &crate::state::Subtitle) -> avio::C
     }
 }
 
+/// Attaches a per-clip chroma key (green/blue screen) as avio
+/// `FilterStep::ChromaKey` / `ColorKey` (+ optional `SpillSuppress`), applied
+/// *first* in the clip video chain so it keys the original colours before any
+/// grade/scale. The key colour becomes transparent, revealing the track below
+/// when composited (most useful on a V2 overlay). No-op when disabled. Shared by
+/// export and the timeline preview so both match.
+#[allow(clippy::float_cmp)]
+pub fn apply_keying(clip: avio::Clip, k: &crate::state::Keying) -> avio::Clip {
+    if !k.enabled {
+        return clip;
+    }
+    let [r, g, b] = k.color;
+    let color = format!("0x{r:02X}{g:02X}{b:02X}");
+    let similarity = k.similarity.clamp(0.0, 1.0);
+    let blend = k.blend.clamp(0.0, 1.0);
+    let clip = match k.mode {
+        crate::state::KeyMode::Chroma => clip.with_video_effect(avio::FilterStep::ChromaKey {
+            color: color.clone(),
+            similarity,
+            blend,
+        }),
+        crate::state::KeyMode::Color => clip.with_video_effect(avio::FilterStep::ColorKey {
+            color: color.clone(),
+            similarity,
+            blend,
+        }),
+    };
+    if k.spill > 0.0 {
+        clip.with_video_effect(avio::FilterStep::SpillSuppress {
+            key_color: color,
+            strength: k.spill.clamp(0.0, 1.0),
+        })
+    } else {
+        clip
+    }
+}
+
 fn clips_to_avio(clips: Vec<ExportClip>, canvas: Option<(u32, u32)>) -> Vec<avio::Clip> {
     clips
         .into_iter()
@@ -641,6 +680,10 @@ fn clips_to_avio(clips: Vec<ExportClip>, canvas: Option<(u32, u32)>) -> Vec<avio
                 Some(kind) => clip.with_transition(kind, c.transition_duration),
                 None => clip,
             };
+            // Chroma key first — key the original colours before any transform /
+            // grade / scale, producing alpha the composer reveals through. Shared
+            // with preview. No-op when disabled.
+            let clip = apply_keying(clip, &c.keying);
             // Geometric transform (crop → flip → rotate) applied before the grade
             // so grading/effects act on the transformed image. Shared with preview.
             let clip = apply_transform(clip, &c.transform, c.width, c.height);
@@ -1724,6 +1767,79 @@ mod tests {
         match &steps[0] {
             avio::FilterStep::SubtitlesAss { path } => assert_eq!(path, "ep1.ass"),
             other => panic!("expected SubtitlesAss, got {other:?}"),
+        }
+    }
+
+    /// Disabled keying attaches no step.
+    #[test]
+    fn keying_disabled_produces_no_step() {
+        use super::apply_keying;
+
+        let k = crate::state::Keying::default(); // enabled: false
+        let steps = apply_keying(avio::Clip::new("test.mp4"), &k).video_effect_chain();
+        assert!(steps.is_empty());
+    }
+
+    /// Chroma mode emits a `ChromaKey` with the `0xRRGGBB` colour and params; a
+    /// non-zero spill appends a `SpillSuppress`.
+    #[test]
+    fn keying_chroma_emits_chromakey_and_spill() {
+        use super::apply_keying;
+        use crate::state::{KeyMode, Keying};
+
+        let k = Keying {
+            enabled: true,
+            mode: KeyMode::Chroma,
+            color: [0, 255, 0],
+            similarity: 0.3,
+            blend: 0.1,
+            spill: 0.5,
+        };
+        let steps = apply_keying(avio::Clip::new("test.mp4"), &k).video_effect_chain();
+        assert_eq!(steps.len(), 2);
+        match &steps[0] {
+            avio::FilterStep::ChromaKey {
+                color,
+                similarity,
+                blend,
+            } => {
+                assert_eq!(color, "0x00FF00");
+                assert!((*similarity - 0.3).abs() < 1e-6);
+                assert!((*blend - 0.1).abs() < 1e-6);
+            }
+            other => panic!("expected ChromaKey, got {other:?}"),
+        }
+        match &steps[1] {
+            avio::FilterStep::SpillSuppress {
+                key_color,
+                strength,
+            } => {
+                assert_eq!(key_color, "0x00FF00");
+                assert!((*strength - 0.5).abs() < 1e-6);
+            }
+            other => panic!("expected SpillSuppress, got {other:?}"),
+        }
+    }
+
+    /// Color mode emits a `ColorKey`; zero spill emits no `SpillSuppress`.
+    #[test]
+    fn keying_color_mode_no_spill() {
+        use super::apply_keying;
+        use crate::state::{KeyMode, Keying};
+
+        let k = Keying {
+            enabled: true,
+            mode: KeyMode::Color,
+            color: [0, 0, 255],
+            similarity: 0.2,
+            blend: 0.05,
+            spill: 0.0,
+        };
+        let steps = apply_keying(avio::Clip::new("test.mp4"), &k).video_effect_chain();
+        assert_eq!(steps.len(), 1);
+        match &steps[0] {
+            avio::FilterStep::ColorKey { color, .. } => assert_eq!(color, "0x0000FF"),
+            other => panic!("expected ColorKey, got {other:?}"),
         }
     }
 
