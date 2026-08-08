@@ -494,6 +494,61 @@ pub fn show_inspector(state: &mut state::AppState, ui: &mut egui::Ui) {
                         "Burned in per clip — subtitle timing is relative to this clip's start.",
                     );
                         });
+                    egui::CollapsingHeader::new("Chroma Key")
+                        .id_salt("clip_chroma_key")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                    ui.checkbox(&mut clip.keying.enabled, "Enable chroma key")
+                        .on_hover_text(
+                            "Most useful on a V2+ overlay clip: the key colour becomes \
+                             transparent, revealing the track below.",
+                        );
+                    ui.add_enabled_ui(clip.keying.is_active(), |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Mode");
+                            ui.selectable_value(
+                                &mut clip.keying.mode,
+                                state::KeyMode::Chroma,
+                                state::KeyMode::Chroma.label(),
+                            );
+                            ui.selectable_value(
+                                &mut clip.keying.mode,
+                                state::KeyMode::Color,
+                                state::KeyMode::Color.label(),
+                            );
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Key colour");
+                            ui.color_edit_button_srgb(&mut clip.keying.color);
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Similarity");
+                            ui.add(
+                                egui::Slider::new(&mut clip.keying.similarity, 0.0..=1.0)
+                                    .fixed_decimals(2),
+                            );
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Blend (feather)");
+                            ui.add(
+                                egui::Slider::new(&mut clip.keying.blend, 0.0..=1.0)
+                                    .fixed_decimals(2),
+                            );
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Spill");
+                            ui.add(
+                                egui::Slider::new(&mut clip.keying.spill, 0.0..=1.0)
+                                    .fixed_decimals(2),
+                            );
+                        })
+                        .response
+                        .on_hover_text(
+                            "Spill suppression is an approximation (global desaturation via \
+                             hue), not limited to the key hue.",
+                        );
+                    });
+                        });
                     egui::CollapsingHeader::new("Color Grading")
                         .id_salt("clip_color_grading")
                         .default_open(true)
@@ -873,6 +928,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         transform: tc.transform,
                         overlay: tc.overlay.clone(),
                         subtitle: tc.subtitle.clone(),
+                        keying: tc.keying,
                     }
                 };
                 let tracks = &state.timeline.tracks;
@@ -1353,6 +1409,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 transform: tc.transform,
                 overlay: tc.overlay.clone(),
                 subtitle: tc.subtitle.clone(),
+                keying: tc.keying,
             };
             let tracks = &state.timeline.tracks;
             let audio_start = state.timeline.audio_track_start();
@@ -1445,6 +1502,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                             transform: tc.transform,
                             overlay: tc.overlay.clone(),
                             subtitle: tc.subtitle.clone(),
+                            keying: tc.keying,
                         };
                         let tracks = &state.timeline.tracks;
                         let audio_start = state.timeline.audio_track_start();
@@ -3282,6 +3340,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 transform: tc.transform,
                 overlay: tc.overlay.clone(),
                 subtitle: tc.subtitle.clone(),
+                keying: tc.keying,
             };
             let tracks = &state.timeline.tracks;
             let audio_start = state.timeline.audio_track_start();
@@ -3384,6 +3443,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             transform: state::Transform::default(),
             overlay: state::Overlay::default(),
             subtitle: state::Subtitle::default(),
+            keying: state::Keying::default(),
         };
         // Sorted insert so that out-of-order drops don't corrupt array order.
         let track = &mut state.timeline.tracks[track_idx].clips;
@@ -3528,6 +3588,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 transform: state.timeline.tracks[ti].clips[ci].transform,
                 overlay: state.timeline.tracks[ti].clips[ci].overlay.clone(),
                 subtitle: state.timeline.tracks[ti].clips[ci].subtitle.clone(),
+                keying: state.timeline.tracks[ti].clips[ci].keying,
             };
             state.timeline.tracks[ti].clips.insert(ci + 1, right);
         }

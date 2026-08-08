@@ -925,6 +925,82 @@ impl Subtitle {
     }
 }
 
+/// Chroma-key filter selection: `Chroma` uses avio `ChromaKey` (YUV `chromakey`,
+/// best for video green screen); `Color` uses `ColorKey` (RGB `colorkey`).
+#[derive(Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum KeyMode {
+    #[default]
+    Chroma,
+    Color,
+}
+
+impl KeyMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            KeyMode::Chroma => "Chroma (YUV)",
+            KeyMode::Color => "Color (RGB)",
+        }
+    }
+}
+
+/// Per-clip chroma key (green/blue screen). Neutral when `enabled` is `false`.
+/// Applied via avio `FilterStep::ChromaKey` / `ColorKey` (+ optional
+/// `SpillSuppress`) in the clip effect chain, so the keyed transparency shows
+/// identically in the preview and the export. Most useful on a V2 overlay clip
+/// (the key colour becomes transparent, revealing the track below).
+#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Keying {
+    /// Whether keying is active.
+    pub enabled: bool,
+    /// Which key filter to use.
+    #[serde(default)]
+    pub mode: KeyMode,
+    /// Key colour (default green). Converted to an FFmpeg `0xRRGGBB` string.
+    #[serde(default = "default_key_colour")]
+    pub color: [u8; 3],
+    /// Match radius `0.0..=1.0`; higher removes more pixels.
+    #[serde(default = "default_key_similarity")]
+    pub similarity: f32,
+    /// Edge softness / feather `0.0..=1.0`; `0.0` = hard edge.
+    #[serde(default = "default_key_blend")]
+    pub blend: f32,
+    /// Spill suppression `0.0..=1.0`; `0.0` = off. Maps to avio `SpillSuppress`.
+    #[serde(default)]
+    pub spill: f32,
+}
+
+fn default_key_colour() -> [u8; 3] {
+    [0, 255, 0]
+}
+
+fn default_key_similarity() -> f32 {
+    0.30
+}
+
+fn default_key_blend() -> f32 {
+    0.10
+}
+
+impl Default for Keying {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mode: KeyMode::default(),
+            color: default_key_colour(),
+            similarity: default_key_similarity(),
+            blend: default_key_blend(),
+            spill: 0.0,
+        }
+    }
+}
+
+impl Keying {
+    /// `true` when keying is active.
+    pub fn is_active(&self) -> bool {
+        self.enabled
+    }
+}
+
 #[derive(Clone, PartialEq)]
 pub struct TimelineClip {
     pub source_index: usize,
@@ -1003,6 +1079,8 @@ pub struct TimelineClip {
     pub overlay: Overlay,
     /// Per-clip burned-in subtitle (SRT / ASS). Default: none.
     pub subtitle: Subtitle,
+    /// Per-clip chroma key (green/blue screen). Default: disabled.
+    pub keying: Keying,
 }
 
 pub struct TimelineState {
