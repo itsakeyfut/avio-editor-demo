@@ -468,7 +468,6 @@ The following limitations were identified and should be filed as Issues against 
 | `Timeline::render()` has no proxy-aware substitution | Must manually swap paths before render; fragile | `ff-pipeline` |
 | `PreviewPlayer` is not `Clone` / shareable | One player instance per panel; no shared seek state | `ff-preview` |
 | No frame-ready callback on `RgbaSink` (must poll) | Render loop wakes at 60 fps regardless of decode rate; wastes CPU when paused | `ff-preview` |
-| `FilterStep::OverlayImage` cannot scale the overlay image (native size only) | Per-clip watermark/logo overlay supports position + opacity but not scale; PNG must be pre-resized (docs/issue71.md) | `ff-filter` |
 
 ---
 
