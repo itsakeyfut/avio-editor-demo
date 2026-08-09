@@ -39,6 +39,8 @@ pub struct ExportClip {
     /// Static overlay position (canvas px) for a PiP (V2+) clip. `Clip::with_position`.
     pub position_x: f32,
     pub position_y: f32,
+    /// Static uniform scale (% of source) for a PiP (V2+) clip. `FilterStep::ScaleAnimated`.
+    pub scale_pct: f32,
     /// Optional proxy file to decode from. When `Some`, forwarded to `Clip::proxy`
     /// so avio renders from the proxy and scales up to the original resolution.
     pub proxy_path: Option<PathBuf>,
@@ -743,22 +745,44 @@ fn keytrack_to_avio(
     track
 }
 
-/// Attaches per-clip static position + keyframe animation to the avio `Clip`.
+/// Converts a clip-local demo scale [`KeyTrack`](crate::state::KeyTrack) (values in
+/// percent of source) into a timeline-global `avio::AnimationTrack` in pixels for one
+/// axis: `px = dim * pct / 100`, clamped to ≥ 1 (`scale` needs a positive size).
+fn scale_track_to_avio(
+    kt: &crate::state::KeyTrack,
+    start: Duration,
+    dim: u32,
+) -> avio::AnimationTrack<f64> {
+    let mut track = avio::AnimationTrack::new();
+    for k in &kt.keys {
+        let ts = start + Duration::from_secs_f64(k.t_secs.max(0.0));
+        let px = (f64::from(dim) * (k.value / 100.0)).max(1.0);
+        track = track.push(avio::Keyframe::new(ts, px, easing_to_avio(k.easing)));
+    }
+    track
+}
+
+/// Attaches per-clip static transform + keyframe animation to the avio `Clip`.
 ///
 /// - Static overlay position (`position` px) → `Clip::with_position` (baseline;
 ///   a per-axis track overrides it in avio).
 /// - `opacity` track → `Clip::with_opacity_track` (drives `colorchannelmixer` alpha).
 /// - `pos_x`/`pos_y` tracks → `Clip::with_x_track`/`with_y_track` (drive `overlay`
 ///   x/y, avio #1293).
+/// - Static `scale_pct` or the `scale` track → `FilterStep::ScaleAnimated` (self-
+///   animating `scale=eval=frame`, avio #1297). `src` is the clip's source size,
+///   used to turn a percentage into pixels.
 ///
 /// Clip-local keyframe times are offset by `start_on_track` into the timeline-global
-/// tracks avio evaluates. No-op for empty tracks / zero position. Shared by export and
+/// tracks avio evaluates. No-op for empty tracks / neutral values. Shared by export and
 /// preview so both match.
 pub fn apply_animation(
     clip: avio::Clip,
     anim: &crate::state::ClipAnimation,
     start_on_track: Duration,
     position: (f32, f32),
+    scale_pct: f32,
+    src: (u32, u32),
 ) -> avio::Clip {
     let mut clip = clip;
     #[allow(clippy::float_cmp)]
@@ -777,6 +801,40 @@ pub fn apply_animation(
     }
     if anim.pos_y.is_active() {
         clip = clip.with_y_track(keytrack_to_avio(&anim.pos_y, start_on_track, None));
+    }
+    // Scale (PiP resize / zoom) as a self-animating `scale` effect. Uniform on both
+    // axes (preserves aspect). Applied after the other transforms.
+    let (src_w, src_h) = src;
+    // Lanczos: high-quality downscale — fast_bilinear aliases badly when a PiP shrinks.
+    // The scaled output is small, so the per-frame cost stays modest.
+    const SCALE_ALGO: avio::ScaleAlgorithm = avio::ScaleAlgorithm::Lanczos;
+    if src_w > 0 && src_h > 0 {
+        if anim.scale.is_active() {
+            clip = clip.with_video_effect(avio::FilterStep::ScaleAnimated {
+                width: avio::AnimatedValue::Track(scale_track_to_avio(
+                    &anim.scale,
+                    start_on_track,
+                    src_w,
+                )),
+                height: avio::AnimatedValue::Track(scale_track_to_avio(
+                    &anim.scale,
+                    start_on_track,
+                    src_h,
+                )),
+                algorithm: SCALE_ALGO,
+            });
+        } else {
+            #[allow(clippy::float_cmp)]
+            if scale_pct != 100.0 {
+                let w = (f64::from(src_w) * (f64::from(scale_pct) / 100.0)).max(1.0);
+                let h = (f64::from(src_h) * (f64::from(scale_pct) / 100.0)).max(1.0);
+                clip = clip.with_video_effect(avio::FilterStep::ScaleAnimated {
+                    width: avio::AnimatedValue::Static(w),
+                    height: avio::AnimatedValue::Static(h),
+                    algorithm: SCALE_ALGO,
+                });
+            }
+        }
     }
     clip
 }
@@ -869,13 +927,15 @@ fn clips_to_avio(clips: Vec<ExportClip>, canvas: Option<(u32, u32)>) -> Vec<avio
             // Region-composite mask (garbage matte) — shapes the final alpha.
             // Shared with the preview. No-op when no mask shape is selected.
             let clip = apply_mask(clip, &c.mask, c.width, c.height);
-            // Per-clip static position + keyframe animation (opacity, position). Tracks
-            // take precedence over the static opacity/position. Shared with the preview.
+            // Per-clip static transform + keyframe animation (opacity, position, scale).
+            // Tracks take precedence over the static values. Shared with the preview.
             let clip = apply_animation(
                 clip,
                 &c.animation,
                 c.start_on_track,
                 (c.position_x, c.position_y),
+                c.scale_pct,
+                (c.width, c.height),
             );
             #[allow(clippy::float_cmp)]
             let clip = if c.opacity != 1.0 {
@@ -2126,6 +2186,8 @@ mod tests {
             &anim,
             std::time::Duration::ZERO,
             (0.0, 0.0),
+            100.0,
+            (0, 0),
         );
         assert!(clip.opacity_track.is_none());
     }
@@ -2147,6 +2209,8 @@ mod tests {
             &anim,
             Duration::from_secs(2),
             (0.0, 0.0),
+            100.0,
+            (0, 0),
         );
         let track = clip.opacity_track.expect("opacity track set");
         // Held at the first value before the clip's global start.
@@ -2169,9 +2233,16 @@ mod tests {
         let mut ease = ClipAnimation::default();
         ease.opacity.insert(0.0, 0.0, KeyEasing::EaseInOut);
         ease.opacity.insert(2.0, 1.0, KeyEasing::Linear);
-        let et = apply_animation(avio::Clip::new("t.mp4"), &ease, Duration::ZERO, (0.0, 0.0))
-            .opacity_track
-            .expect("track");
+        let et = apply_animation(
+            avio::Clip::new("t.mp4"),
+            &ease,
+            Duration::ZERO,
+            (0.0, 0.0),
+            100.0,
+            (0, 0),
+        )
+        .opacity_track
+        .expect("track");
         let q = et.value_at(Duration::from_millis(500)); // t=0.5s of a 2s ramp
         assert!(
             q < 0.24,
@@ -2188,6 +2259,8 @@ mod tests {
             &on_last,
             Duration::ZERO,
             (0.0, 0.0),
+            100.0,
+            (0, 0),
         )
         .opacity_track
         .expect("track");
@@ -2200,9 +2273,16 @@ mod tests {
         let mut hold = ClipAnimation::default();
         hold.opacity.insert(0.0, 0.0, KeyEasing::Hold);
         hold.opacity.insert(2.0, 1.0, KeyEasing::Linear);
-        let ht = apply_animation(avio::Clip::new("t.mp4"), &hold, Duration::ZERO, (0.0, 0.0))
-            .opacity_track
-            .expect("track");
+        let ht = apply_animation(
+            avio::Clip::new("t.mp4"),
+            &hold,
+            Duration::ZERO,
+            (0.0, 0.0),
+            100.0,
+            (0, 0),
+        )
+        .opacity_track
+        .expect("track");
         assert!(
             ht.value_at(Duration::from_secs(1)).abs() < 1e-9,
             "Hold holds start mid-segment"
@@ -2223,7 +2303,14 @@ mod tests {
 
         // Static position, no tracks.
         let anim = ClipAnimation::default();
-        let clip = apply_animation(avio::Clip::new("t.mp4"), &anim, Duration::ZERO, (100.0, 50.0));
+        let clip = apply_animation(
+            avio::Clip::new("t.mp4"),
+            &anim,
+            Duration::ZERO,
+            (100.0, 50.0),
+            100.0,
+            (0, 0),
+        );
         assert_eq!((clip.x, clip.y), (100.0, 50.0));
         assert!(clip.x_track.is_none() && clip.y_track.is_none());
 
@@ -2233,11 +2320,66 @@ mod tests {
         a.pos_x.insert(2.0, 640.0, KeyEasing::Linear);
         a.pos_y.insert(0.0, 0.0, KeyEasing::Linear);
         a.pos_y.insert(2.0, 360.0, KeyEasing::Linear);
-        let clip = apply_animation(avio::Clip::new("t.mp4"), &a, Duration::from_secs(1), (0.0, 0.0));
+        let clip = apply_animation(
+            avio::Clip::new("t.mp4"),
+            &a,
+            Duration::from_secs(1),
+            (0.0, 0.0),
+            100.0,
+            (0, 0),
+        );
         let xt = clip.x_track.expect("x track");
         let yt = clip.y_track.expect("y track");
         // Clip-local 1s → global 2s → midpoint: x=320, y=180.
         assert!((xt.value_at(Duration::from_secs(2)) - 320.0).abs() < 1e-9);
         assert!((yt.value_at(Duration::from_secs(2)) - 180.0).abs() < 1e-9);
+    }
+
+    /// Static scale % → a `ScaleAnimated` effect sized in source pixels; a scale track
+    /// → animated width/height tracks (px), offset to timeline-global time.
+    #[test]
+    fn animation_scale_static_and_track() {
+        use super::apply_animation;
+        use crate::state::{ClipAnimation, KeyEasing};
+        use std::time::Duration;
+
+        let scale_effect = |clip: avio::Clip| {
+            clip.video_effect_chain().into_iter().find_map(|s| match s {
+                avio::FilterStep::ScaleAnimated { width, height, .. } => Some((width, height)),
+                _ => None,
+            })
+        };
+
+        // Static 50% of 1920x1080 → 960x540.
+        let anim = ClipAnimation::default();
+        let clip = apply_animation(
+            avio::Clip::new("t.mp4"),
+            &anim,
+            Duration::ZERO,
+            (0.0, 0.0),
+            50.0,
+            (1920, 1080),
+        );
+        let (w, h) = scale_effect(clip).expect("static ScaleAnimated present");
+        assert!((w.value_at(Duration::ZERO) - 960.0).abs() < 1e-6);
+        assert!((h.value_at(Duration::ZERO) - 540.0).abs() < 1e-6);
+
+        // Scale track 100%→50% over 2s, clip placed at 1s; source 1000x500.
+        let mut a = ClipAnimation::default();
+        a.scale.insert(0.0, 100.0, KeyEasing::Linear);
+        a.scale.insert(2.0, 50.0, KeyEasing::Linear);
+        let clip = apply_animation(
+            avio::Clip::new("t.mp4"),
+            &a,
+            Duration::from_secs(1),
+            (0.0, 0.0),
+            100.0,
+            (1000, 500),
+        );
+        let (w, h) = scale_effect(clip).expect("animated ScaleAnimated present");
+        // Clip-local 0 → global 1s → 100% → 1000; clip-local 2s → global 3s → 50% → 500.
+        assert!((w.value_at(Duration::from_secs(1)) - 1000.0).abs() < 1e-6);
+        assert!((w.value_at(Duration::from_secs(3)) - 500.0).abs() < 1e-6);
+        assert!((h.value_at(Duration::from_secs(1)) - 500.0).abs() < 1e-6);
     }
 }

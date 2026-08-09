@@ -184,26 +184,31 @@ fn position_keyframe_panel(
     ui: &mut egui::Ui,
     id: &str,
     label: &str,
-    static_px: &mut f32,
+    static_val: &mut f32,
     track: &mut state::KeyTrack,
     clip_local: f64,
+    unit: &str,
 ) {
     egui::CollapsingHeader::new(label)
         .id_salt(id)
         .default_open(track.is_active())
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label("px");
-                ui.add(egui::DragValue::new(static_px).speed(1.0).fixed_decimals(0));
+                ui.label(unit);
+                ui.add(
+                    egui::DragValue::new(static_val)
+                        .speed(1.0)
+                        .fixed_decimals(0),
+                );
                 if ui
                     .button("＋ Key @ playhead")
                     .on_hover_text(format!(
-                        "Add a key at {clip_local:.2}s (clip-local) = {:.0}px",
-                        *static_px
+                        "Add a key at {clip_local:.2}s (clip-local) = {:.0}{unit}",
+                        *static_val
                     ))
                     .clicked()
                 {
-                    track.insert(clip_local, f64::from(*static_px), state::KeyEasing::Linear);
+                    track.insert(clip_local, f64::from(*static_val), state::KeyEasing::Linear);
                 }
                 if track.is_active() && ui.button("Clear").clicked() {
                     track.keys.clear();
@@ -221,7 +226,7 @@ fn position_keyframe_panel(
                             .add(
                                 egui::DragValue::new(&mut v)
                                     .speed(1.0)
-                                    .suffix(" px")
+                                    .suffix(format!(" {unit}"))
                                     .fixed_decimals(0),
                             )
                             .changed()
@@ -248,7 +253,7 @@ fn position_keyframe_panel(
                     track.keys.remove(i);
                 }
             } else {
-                ui.weak("No keys — position is static.");
+                ui.weak("No keys — value is static.");
             }
         });
 }
@@ -410,10 +415,11 @@ pub fn show_inspector(state: &mut state::AppState, ui: &mut egui::Ui) {
                                 ui.weak("No keys — opacity is static.");
                             }
                         });
-                    // ── Position keyframes (PiP move) — overlay (V2+) clips only ──
-                    // Base-layer (V1) position is export-only in the realtime preview
-                    // (nothing composites behind the base), so position keyframes are
-                    // restricted to overlay tracks to keep preview == export.
+                    // ── Position & Scale keyframes (PiP) — overlay (V2+) clips only ──
+                    // Base-layer (V1) position/scale is export-only in the realtime
+                    // preview (nothing composites behind the base, and scaling V1 would
+                    // change the output size per frame), so these are restricted to
+                    // overlay tracks to keep preview == export.
                     if ti >= 1 {
                         let clip_local =
                             (playhead_secs - clip.start_on_track.as_secs_f64()).max(0.0);
@@ -424,6 +430,7 @@ pub fn show_inspector(state: &mut state::AppState, ui: &mut egui::Ui) {
                             &mut clip.position_x,
                             &mut clip.animation.pos_x,
                             clip_local,
+                            "px",
                         );
                         position_keyframe_panel(
                             ui,
@@ -432,6 +439,16 @@ pub fn show_inspector(state: &mut state::AppState, ui: &mut egui::Ui) {
                             &mut clip.position_y,
                             &mut clip.animation.pos_y,
                             clip_local,
+                            "px",
+                        );
+                        position_keyframe_panel(
+                            ui,
+                            "clip_scale_keys",
+                            "Scale Keyframes",
+                            &mut clip.scale_pct,
+                            &mut clip.animation.scale,
+                            clip_local,
+                            "%",
                         );
                     }
                     // Blend mode is only meaningful for overlay (V2+) clips.
@@ -1220,6 +1237,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         blend_mode: tc.blend_mode,
                         position_x: tc.position_x,
                         position_y: tc.position_y,
+                        scale_pct: tc.scale_pct,
                         proxy_path: if use_proxies {
                             src.proxy_path.clone()
                         } else {
@@ -1709,6 +1727,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 blend_mode: tc.blend_mode,
                 position_x: tc.position_x,
                 position_y: tc.position_y,
+                scale_pct: tc.scale_pct,
                 vignette: tc.vignette,
                 vignette_x: tc.vignette_x,
                 vignette_y: tc.vignette_y,
@@ -1806,6 +1825,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                             blend_mode: tc.blend_mode,
                             position_x: tc.position_x,
                             position_y: tc.position_y,
+                            scale_pct: tc.scale_pct,
                             vignette: tc.vignette,
                             vignette_x: tc.vignette_x,
                             vignette_y: tc.vignette_y,
@@ -3731,6 +3751,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 blend_mode: tc.blend_mode,
                 position_x: tc.position_x,
                 position_y: tc.position_y,
+                scale_pct: tc.scale_pct,
                 vignette: tc.vignette,
                 vignette_x: tc.vignette_x,
                 vignette_y: tc.vignette_y,
@@ -3841,6 +3862,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             blend_mode: avio::BlendMode::Normal,
             position_x: 0.0,
             position_y: 0.0,
+            scale_pct: 100.0,
             lut_path: None,
             wb_temperature: state::WB_NEUTRAL_TEMP,
             wb_tint: 0.0,
@@ -3990,6 +4012,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 blend_mode: state.timeline.tracks[ti].clips[ci].blend_mode,
                 position_x: state.timeline.tracks[ti].clips[ci].position_x,
                 position_y: state.timeline.tracks[ti].clips[ci].position_y,
+                scale_pct: state.timeline.tracks[ti].clips[ci].scale_pct,
                 lut_path: state.timeline.tracks[ti].clips[ci].lut_path.clone(),
                 wb_temperature: state.timeline.tracks[ti].clips[ci].wb_temperature,
                 wb_tint: state.timeline.tracks[ti].clips[ci].wb_tint,

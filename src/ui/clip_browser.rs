@@ -656,6 +656,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
                 blend_mode: avio::BlendMode::Normal,
                 position_x: 0.0,
                 position_y: 0.0,
+                scale_pct: 100.0,
                 lut_path: None,
                 wb_temperature: state::WB_NEUTRAL_TEMP,
                 wb_tint: 0.0,
