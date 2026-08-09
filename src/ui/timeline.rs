@@ -175,6 +175,84 @@ fn snap_clip_start(
 
 /// Renders the clip / title inspector (Clip Properties, Title Properties).
 /// Shown in the right side panel; empty when nothing is selected.
+/// Renders a single-axis position keyframe panel (canvas pixels): a static value
+/// DragValue, an "add key at playhead" button (captures the static value at the
+/// clip-local playhead time), and the key list with per-key value + easing. Mirrors
+/// the opacity keyframe panel; a key's easing controls the ramp to the next key, so it
+/// is shown only on keys that have a following segment.
+fn position_keyframe_panel(
+    ui: &mut egui::Ui,
+    id: &str,
+    label: &str,
+    static_px: &mut f32,
+    track: &mut state::KeyTrack,
+    clip_local: f64,
+) {
+    egui::CollapsingHeader::new(label)
+        .id_salt(id)
+        .default_open(track.is_active())
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("px");
+                ui.add(egui::DragValue::new(static_px).speed(1.0).fixed_decimals(0));
+                if ui
+                    .button("＋ Key @ playhead")
+                    .on_hover_text(format!(
+                        "Add a key at {clip_local:.2}s (clip-local) = {:.0}px",
+                        *static_px
+                    ))
+                    .clicked()
+                {
+                    track.insert(clip_local, f64::from(*static_px), state::KeyEasing::Linear);
+                }
+                if track.is_active() && ui.button("Clear").clicked() {
+                    track.keys.clear();
+                }
+            });
+            if track.is_active() {
+                ui.weak("Easing is the ramp to the NEXT key. Re-play to preview edits.");
+                let n = track.keys.len();
+                let mut to_delete: Option<usize> = None;
+                for (i, k) in track.keys.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("{:.2}s", k.t_secs));
+                        let mut v = k.value;
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut v)
+                                    .speed(1.0)
+                                    .suffix(" px")
+                                    .fixed_decimals(0),
+                            )
+                            .changed()
+                        {
+                            k.value = v;
+                        }
+                        if i + 1 < n {
+                            egui::ComboBox::from_id_salt((id, "ease", i))
+                                .selected_text(k.easing.label())
+                                .show_ui(ui, |ui| {
+                                    for e in state::KeyEasing::ALL {
+                                        ui.selectable_value(&mut k.easing, e, e.label());
+                                    }
+                                });
+                        } else {
+                            ui.weak("→ end");
+                        }
+                        if ui.button("✖").clicked() {
+                            to_delete = Some(i);
+                        }
+                    });
+                }
+                if let Some(i) = to_delete {
+                    track.keys.remove(i);
+                }
+            } else {
+                ui.weak("No keys — position is static.");
+            }
+        });
+}
+
 pub fn show_inspector(state: &mut state::AppState, ui: &mut egui::Ui) {
     ui.heading("Inspector");
     if state.timeline_selected.is_none() && state.selected_title_clip.is_none() {
@@ -332,6 +410,30 @@ pub fn show_inspector(state: &mut state::AppState, ui: &mut egui::Ui) {
                                 ui.weak("No keys — opacity is static.");
                             }
                         });
+                    // ── Position keyframes (PiP move) — overlay (V2+) clips only ──
+                    // Base-layer (V1) position is export-only in the realtime preview
+                    // (nothing composites behind the base), so position keyframes are
+                    // restricted to overlay tracks to keep preview == export.
+                    if ti >= 1 {
+                        let clip_local =
+                            (playhead_secs - clip.start_on_track.as_secs_f64()).max(0.0);
+                        position_keyframe_panel(
+                            ui,
+                            "clip_pos_x_keys",
+                            "Position X Keyframes",
+                            &mut clip.position_x,
+                            &mut clip.animation.pos_x,
+                            clip_local,
+                        );
+                        position_keyframe_panel(
+                            ui,
+                            "clip_pos_y_keys",
+                            "Position Y Keyframes",
+                            &mut clip.position_y,
+                            &mut clip.animation.pos_y,
+                            clip_local,
+                        );
+                    }
                     // Blend mode is only meaningful for overlay (V2+) clips.
                     if ti >= 1 {
                         ui.horizontal(|ui| {
@@ -1116,6 +1218,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         speed: tc.speed,
                         opacity: tc.opacity,
                         blend_mode: tc.blend_mode,
+                        position_x: tc.position_x,
+                        position_y: tc.position_y,
                         proxy_path: if use_proxies {
                             src.proxy_path.clone()
                         } else {
@@ -1603,6 +1707,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 speed: tc.speed,
                 opacity: tc.opacity,
                 blend_mode: tc.blend_mode,
+                position_x: tc.position_x,
+                position_y: tc.position_y,
                 vignette: tc.vignette,
                 vignette_x: tc.vignette_x,
                 vignette_y: tc.vignette_y,
@@ -1698,6 +1804,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                             speed: tc.speed,
                             opacity: tc.opacity,
                             blend_mode: tc.blend_mode,
+                            position_x: tc.position_x,
+                            position_y: tc.position_y,
                             vignette: tc.vignette,
                             vignette_x: tc.vignette_x,
                             vignette_y: tc.vignette_y,
@@ -3621,6 +3729,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 speed: tc.speed,
                 opacity: tc.opacity,
                 blend_mode: tc.blend_mode,
+                position_x: tc.position_x,
+                position_y: tc.position_y,
                 vignette: tc.vignette,
                 vignette_x: tc.vignette_x,
                 vignette_y: tc.vignette_y,
@@ -3729,6 +3839,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             speed: 1.0,
             opacity: 1.0,
             blend_mode: avio::BlendMode::Normal,
+            position_x: 0.0,
+            position_y: 0.0,
             lut_path: None,
             wb_temperature: state::WB_NEUTRAL_TEMP,
             wb_tint: 0.0,
@@ -3876,6 +3988,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 speed: state.timeline.tracks[ti].clips[ci].speed,
                 opacity: state.timeline.tracks[ti].clips[ci].opacity,
                 blend_mode: state.timeline.tracks[ti].clips[ci].blend_mode,
+                position_x: state.timeline.tracks[ti].clips[ci].position_x,
+                position_y: state.timeline.tracks[ti].clips[ci].position_y,
                 lut_path: state.timeline.tracks[ti].clips[ci].lut_path.clone(),
                 wb_temperature: state.timeline.tracks[ti].clips[ci].wb_temperature,
                 wb_tint: state.timeline.tracks[ti].clips[ci].wb_tint,
