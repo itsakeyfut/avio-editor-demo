@@ -37,15 +37,21 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
     let video_size = egui::vec2(available.x, (available.y - ctrl_height).max(0.0));
 
     if timeline_is_active {
+        let mut poly_rect = None;
         if let Some(tex) = &state.preview_texture {
             let img_rect = show_frame_fitted(ui, tex, video_size);
             draw_title_overlays(state, ui, img_rect);
+            poly_rect = Some(img_rect);
         } else {
             ui.allocate_ui(video_size, |ui| {
                 ui.centered_and_justified(|ui| {
                     ui.label("Loading…");
                 });
             });
+        }
+        // Polygon-mask vertex editing overlay (after the texture borrow ends).
+        if let Some(img_rect) = poly_rect {
+            edit_polygon_mask(state, ui, img_rect);
         }
     } else if state.monitor_clip_index.is_some() {
         let is_audio_only = state
@@ -431,6 +437,130 @@ fn show_frame_fitted(
         .rect_filled(img_rect, 0.0, egui::Color32::BLACK);
     egui::Image::new(egui::load::SizedTexture::new(tex.id(), disp)).paint_at(ui, img_rect);
     img_rect
+}
+
+/// Draws draggable handles for the selected clip's polygon mask over `img_rect`.
+/// Vertices are stored normalised (`[0,1]`); drag moves them, right-click removes
+/// one (keeping at least 3). No-op unless the selected timeline clip has a polygon
+/// mask. Best used while paused (the last frame stays in the preview texture).
+fn edit_polygon_mask(state: &mut state::AppState, ui: &egui::Ui, img_rect: egui::Rect) {
+    let Some((ti, ci)) = state.timeline_selected else {
+        return;
+    };
+    let Some(clip) = state
+        .timeline
+        .tracks
+        .get_mut(ti)
+        .and_then(|t| t.clips.get_mut(ci))
+    else {
+        return;
+    };
+    if clip.mask.shape != state::MaskShape::Polygon || clip.mask.polygon.is_empty() {
+        return;
+    }
+
+    let to_screen = |(nx, ny): (f32, f32)| {
+        egui::pos2(
+            img_rect.min.x + nx * img_rect.width(),
+            img_rect.min.y + ny * img_rect.height(),
+        )
+    };
+
+    // Outline (closed loop).
+    if clip.mask.polygon.len() >= 2 {
+        let mut pts: Vec<egui::Pos2> = clip.mask.polygon.iter().map(|&v| to_screen(v)).collect();
+        if let Some(&first) = pts.first() {
+            pts.push(first);
+        }
+        ui.painter().add(egui::Shape::line(
+            pts,
+            egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 220, 0)),
+        ));
+    }
+
+    // Background click area for double-click-to-add. Registered before the handles
+    // so the handles stay on top for drags / right-clicks.
+    let bg = ui.interact(
+        img_rect,
+        ui.id().with(("poly_bg", ti, ci)),
+        egui::Sense::click(),
+    );
+
+    // Draggable handles; right-click removes (min 3 vertices).
+    let n = clip.mask.polygon.len();
+    let mut remove: Option<usize> = None;
+    for i in 0..n {
+        let p = to_screen(clip.mask.polygon[i]);
+        let handle = egui::Rect::from_center_size(p, egui::vec2(12.0, 12.0));
+        let resp = ui.interact(
+            handle,
+            ui.id().with(("poly_vertex", ti, ci, i)),
+            egui::Sense::click_and_drag(),
+        );
+        let color = if resp.hovered() || resp.dragged() {
+            egui::Color32::WHITE
+        } else {
+            egui::Color32::from_rgb(255, 220, 0)
+        };
+        ui.painter().circle_filled(p, 5.0, color);
+        ui.painter()
+            .circle_stroke(p, 5.0, egui::Stroke::new(1.0, egui::Color32::BLACK));
+        if resp.dragged() && img_rect.width() > 0.0 && img_rect.height() > 0.0 {
+            let np = p + resp.drag_delta();
+            let nx = ((np.x - img_rect.min.x) / img_rect.width()).clamp(0.0, 1.0);
+            let ny = ((np.y - img_rect.min.y) / img_rect.height()).clamp(0.0, 1.0);
+            clip.mask.polygon[i] = (nx, ny);
+        }
+        if resp.secondary_clicked() && n > 3 {
+            remove = Some(i);
+        }
+    }
+    if let Some(i) = remove {
+        clip.mask.polygon.remove(i);
+    }
+
+    // Double-click on empty area inserts a vertex on the nearest edge (max 16).
+    if bg.double_clicked()
+        && clip.mask.polygon.len() < 16
+        && img_rect.width() > 0.0
+        && img_rect.height() > 0.0
+        && let Some(pos) = bg.interact_pointer_pos()
+    {
+        let v = (
+            ((pos.x - img_rect.min.x) / img_rect.width()).clamp(0.0, 1.0),
+            ((pos.y - img_rect.min.y) / img_rect.height()).clamp(0.0, 1.0),
+        );
+        let poly = &mut clip.mask.polygon;
+        if poly.len() < 2 {
+            poly.push(v);
+        } else {
+            let m = poly.len();
+            let mut best = (f32::MAX, 0usize);
+            for i in 0..m {
+                let d = dist_point_seg(v, poly[i], poly[(i + 1) % m]);
+                if d < best.0 {
+                    best = (d, i);
+                }
+            }
+            poly.insert(best.1 + 1, v);
+        }
+    }
+}
+
+/// Distance from point `p` to segment `a`–`b` (all normalised coordinates).
+fn dist_point_seg(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
+    let (px, py) = p;
+    let (ax, ay) = a;
+    let (bx, by) = b;
+    let (dx, dy) = (bx - ax, by - ay);
+    let len2 = dx * dx + dy * dy;
+    let t = if len2 <= 0.0 {
+        0.0
+    } else {
+        (((px - ax) * dx + (py - ay) * dy) / len2).clamp(0.0, 1.0)
+    };
+    let (cx, cy) = (ax + t * dx, ay + t * dy);
+    ((px - cx).powi(2) + (py - cy).powi(2)).sqrt()
 }
 
 /// Draws active T1 title clips as egui text on top of the preview image rect.

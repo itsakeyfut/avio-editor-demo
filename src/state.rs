@@ -1001,6 +1001,120 @@ impl Keying {
     }
 }
 
+/// Per-clip mask shape. `None` = no mask.
+#[derive(Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum MaskShape {
+    #[default]
+    None,
+    /// Rectangular region (avio `RectMask`).
+    Rectangle,
+    /// Luminance key (avio `LumaKey`).
+    Luma,
+    /// Polygon region (avio `PolygonMatte`).
+    Polygon,
+}
+
+impl MaskShape {
+    pub fn label(self) -> &'static str {
+        match self {
+            MaskShape::None => "None",
+            MaskShape::Rectangle => "Rectangle",
+            MaskShape::Luma => "Luma",
+            MaskShape::Polygon => "Polygon",
+        }
+    }
+
+    pub const ALL: [MaskShape; 4] = [
+        MaskShape::None,
+        MaskShape::Rectangle,
+        MaskShape::Luma,
+        MaskShape::Polygon,
+    ];
+}
+
+/// Per-clip region-composite mask (garbage matte): shapes the clip's alpha so the
+/// region is kept and the rest becomes transparent (revealing the track below).
+/// Applied via avio `RectMask` / `LumaKey` / `PolygonMatte` (+ optional
+/// `FeatherMask`) in the clip effect chain, so it shows identically in preview and
+/// export. Neutral when `shape == None`.
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Mask {
+    /// Mask shape (or `None`).
+    #[serde(default)]
+    pub shape: MaskShape,
+    /// Invert the mask (keep the outside instead of the inside).
+    #[serde(default)]
+    pub invert: bool,
+    /// Feather radius in pixels (`0` = hard edge). Maps to avio `FeatherMask`.
+    #[serde(default)]
+    pub feather: u32,
+    /// Rectangle region as percentages of the frame (`0..100`).
+    #[serde(default = "default_mask_rect_pos")]
+    pub rect_x: f32,
+    #[serde(default = "default_mask_rect_pos")]
+    pub rect_y: f32,
+    #[serde(default = "default_mask_rect_size")]
+    pub rect_w: f32,
+    #[serde(default = "default_mask_rect_size")]
+    pub rect_h: f32,
+    /// Luma key: cutoff / match radius / edge softness (`0..1`).
+    #[serde(default = "default_mask_luma_threshold")]
+    pub luma_threshold: f32,
+    #[serde(default = "default_mask_luma_tolerance")]
+    pub luma_tolerance: f32,
+    #[serde(default)]
+    pub luma_softness: f32,
+    /// Polygon vertices in normalised `[0,1]` frame coordinates (3–16 to be active).
+    #[serde(default)]
+    pub polygon: Vec<(f32, f32)>,
+}
+
+fn default_mask_rect_pos() -> f32 {
+    10.0
+}
+
+fn default_mask_rect_size() -> f32 {
+    80.0
+}
+
+fn default_mask_luma_threshold() -> f32 {
+    0.5
+}
+
+fn default_mask_luma_tolerance() -> f32 {
+    0.1
+}
+
+impl Default for Mask {
+    fn default() -> Self {
+        Self {
+            shape: MaskShape::None,
+            invert: false,
+            feather: 0,
+            rect_x: default_mask_rect_pos(),
+            rect_y: default_mask_rect_pos(),
+            rect_w: default_mask_rect_size(),
+            rect_h: default_mask_rect_size(),
+            luma_threshold: default_mask_luma_threshold(),
+            luma_tolerance: default_mask_luma_tolerance(),
+            luma_softness: 0.0,
+            polygon: Vec::new(),
+        }
+    }
+}
+
+impl Mask {
+    /// `true` when a mask shape is selected.
+    pub fn is_active(&self) -> bool {
+        self.shape != MaskShape::None
+    }
+
+    /// Seeds a centred quad polygon (used when starting polygon editing).
+    pub fn default_quad() -> Vec<(f32, f32)> {
+        vec![(0.25, 0.25), (0.75, 0.25), (0.75, 0.75), (0.25, 0.75)]
+    }
+}
+
 #[derive(Clone, PartialEq)]
 pub struct TimelineClip {
     pub source_index: usize,
@@ -1081,6 +1195,8 @@ pub struct TimelineClip {
     pub subtitle: Subtitle,
     /// Per-clip chroma key (green/blue screen). Default: disabled.
     pub keying: Keying,
+    /// Per-clip region-composite mask. Default: none.
+    pub mask: Mask,
 }
 
 pub struct TimelineState {

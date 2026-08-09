@@ -87,6 +87,8 @@ pub struct ProjectTimelineClip {
     pub subtitle: crate::state::Subtitle,
     #[serde(default)]
     pub keying: crate::state::Keying,
+    #[serde(default)]
+    pub mask: crate::state::Mask,
 }
 
 fn default_wb_temperature() -> u32 {
@@ -255,6 +257,7 @@ fn timeline_clip_to_project(tc: &TimelineClip, clips: &[ImportedClip]) -> Projec
         overlay: tc.overlay.clone(),
         subtitle: tc.subtitle.clone(),
         keying: tc.keying,
+        mask: tc.mask.clone(),
     }
 }
 
@@ -303,6 +306,7 @@ fn project_to_timeline_clip(
         overlay: ptc.overlay.clone(),
         subtitle: ptc.subtitle.clone(),
         keying: ptc.keying,
+        mask: ptc.mask.clone(),
     })
 }
 

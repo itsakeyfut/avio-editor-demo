@@ -76,6 +76,8 @@ pub struct ExportClip {
     pub subtitle: crate::state::Subtitle,
     /// Per-clip chroma key (green/blue screen).
     pub keying: crate::state::Keying,
+    /// Per-clip region-composite mask.
+    pub mask: crate::state::Mask,
 }
 
 /// Send-safe snapshot of all timeline tracks, constructed on the main thread
@@ -642,6 +644,66 @@ pub fn apply_keying(clip: avio::Clip, k: &crate::state::Keying) -> avio::Clip {
     }
 }
 
+/// Attaches a per-clip region-composite mask as avio `RectMask` / `LumaKey` /
+/// `PolygonMatte` (+ optional `FeatherMask`), shaping the clip's alpha so the
+/// region is kept and the rest becomes transparent. `src_w`/`src_h` convert the
+/// rectangle's percentages to pixels. No-op when `shape == None` or the region is
+/// degenerate. Shared by export and the preview so both match.
+pub fn apply_mask(clip: avio::Clip, m: &crate::state::Mask, src_w: u32, src_h: u32) -> avio::Clip {
+    use crate::state::MaskShape;
+    let clip = match m.shape {
+        MaskShape::None => return clip,
+        MaskShape::Rectangle => {
+            if src_w == 0 || src_h == 0 {
+                return clip;
+            }
+            let x = ((m.rect_x / 100.0) * src_w as f32).round().max(0.0) as u32;
+            let y = ((m.rect_y / 100.0) * src_h as f32).round().max(0.0) as u32;
+            let w = ((m.rect_w / 100.0) * src_w as f32).round().max(0.0) as u32;
+            let h = ((m.rect_h / 100.0) * src_h as f32).round().max(0.0) as u32;
+            // Clamp the rectangle inside the frame; skip if it rounds away.
+            let w = w.min(src_w.saturating_sub(x));
+            let h = h.min(src_h.saturating_sub(y));
+            if w < 1 || h < 1 {
+                return clip;
+            }
+            clip.with_video_effect(avio::FilterStep::RectMask {
+                x,
+                y,
+                width: w,
+                height: h,
+                invert: m.invert,
+            })
+        }
+        MaskShape::Luma => clip.with_video_effect(avio::FilterStep::LumaKey {
+            threshold: m.luma_threshold.clamp(0.0, 1.0),
+            tolerance: m.luma_tolerance.clamp(0.0, 1.0),
+            softness: m.luma_softness.clamp(0.0, 1.0),
+            invert: m.invert,
+        }),
+        MaskShape::Polygon => {
+            // PolygonMatte needs 3–16 vertices, each in [0,1].
+            if !(3..=16).contains(&m.polygon.len()) {
+                return clip;
+            }
+            let vertices: Vec<(f32, f32)> = m
+                .polygon
+                .iter()
+                .map(|&(x, y)| (x.clamp(0.0, 1.0), y.clamp(0.0, 1.0)))
+                .collect();
+            clip.with_video_effect(avio::FilterStep::PolygonMatte {
+                vertices,
+                invert: m.invert,
+            })
+        }
+    };
+    if m.feather > 0 {
+        clip.with_video_effect(avio::FilterStep::FeatherMask { radius: m.feather })
+    } else {
+        clip
+    }
+}
+
 fn clips_to_avio(clips: Vec<ExportClip>, canvas: Option<(u32, u32)>) -> Vec<avio::Clip> {
     clips
         .into_iter()
@@ -727,6 +789,9 @@ fn clips_to_avio(clips: Vec<ExportClip>, canvas: Option<(u32, u32)>) -> Vec<avio
             // Burned-in subtitle — on top of the overlay. Shared with the preview.
             // No-op when no subtitle file is set.
             let clip = apply_subtitle(clip, &c.subtitle);
+            // Region-composite mask (garbage matte) — shapes the final alpha.
+            // Shared with the preview. No-op when no mask shape is selected.
+            let clip = apply_mask(clip, &c.mask, c.width, c.height);
             #[allow(clippy::float_cmp)]
             let clip = if c.opacity != 1.0 {
                 clip.with_opacity(c.opacity)
@@ -1840,6 +1905,105 @@ mod tests {
         match &steps[0] {
             avio::FilterStep::ColorKey { color, .. } => assert_eq!(color, "0x0000FF"),
             other => panic!("expected ColorKey, got {other:?}"),
+        }
+    }
+
+    /// A `None`-shape mask attaches no step.
+    #[test]
+    fn mask_none_produces_no_step() {
+        use super::apply_mask;
+
+        let m = crate::state::Mask::default();
+        let steps = apply_mask(avio::Clip::new("test.mp4"), &m, 1920, 1080).video_effect_chain();
+        assert!(steps.is_empty());
+    }
+
+    /// Rectangle mask converts % to pixels and emits `RectMask`; feather appends
+    /// a `FeatherMask`.
+    #[test]
+    fn mask_rectangle_emits_rectmask_with_feather() {
+        use super::apply_mask;
+        use crate::state::{Mask, MaskShape};
+
+        let m = Mask {
+            shape: MaskShape::Rectangle,
+            invert: true,
+            feather: 8,
+            rect_x: 10.0,
+            rect_y: 20.0,
+            rect_w: 50.0,
+            rect_h: 25.0,
+            ..Default::default()
+        };
+        let steps = apply_mask(avio::Clip::new("test.mp4"), &m, 1920, 1080).video_effect_chain();
+        assert_eq!(steps.len(), 2);
+        match &steps[0] {
+            avio::FilterStep::RectMask {
+                x,
+                y,
+                width,
+                height,
+                invert,
+            } => {
+                assert_eq!(*x, 192); // 10% of 1920
+                assert_eq!(*y, 216); // 20% of 1080
+                assert_eq!(*width, 960); // 50% of 1920
+                assert_eq!(*height, 270); // 25% of 1080
+                assert!(*invert);
+            }
+            other => panic!("expected RectMask, got {other:?}"),
+        }
+        match &steps[1] {
+            avio::FilterStep::FeatherMask { radius } => assert_eq!(*radius, 8),
+            other => panic!("expected FeatherMask, got {other:?}"),
+        }
+    }
+
+    /// Luma mask emits `LumaKey` carrying the params.
+    #[test]
+    fn mask_luma_emits_lumakey() {
+        use super::apply_mask;
+        use crate::state::{Mask, MaskShape};
+
+        let m = Mask {
+            shape: MaskShape::Luma,
+            luma_threshold: 0.6,
+            luma_tolerance: 0.2,
+            luma_softness: 0.1,
+            ..Default::default()
+        };
+        let steps = apply_mask(avio::Clip::new("test.mp4"), &m, 1920, 1080).video_effect_chain();
+        assert_eq!(steps.len(), 1);
+        assert!(matches!(steps[0], avio::FilterStep::LumaKey { .. }));
+    }
+
+    /// A polygon with < 3 vertices is inactive; ≥ 3 emits `PolygonMatte`.
+    #[test]
+    fn mask_polygon_needs_three_vertices() {
+        use super::apply_mask;
+        use crate::state::{Mask, MaskShape};
+
+        let two = Mask {
+            shape: MaskShape::Polygon,
+            polygon: vec![(0.1, 0.1), (0.9, 0.1)],
+            ..Default::default()
+        };
+        assert!(
+            apply_mask(avio::Clip::new("t.mp4"), &two, 1920, 1080)
+                .video_effect_chain()
+                .is_empty()
+        );
+
+        let quad = Mask {
+            shape: MaskShape::Polygon,
+            polygon: crate::state::Mask::default_quad(),
+            ..Default::default()
+        };
+        let steps = apply_mask(avio::Clip::new("t.mp4"), &quad, 1920, 1080).video_effect_chain();
+        assert_eq!(steps.len(), 1);
+        match &steps[0] {
+            avio::FilterStep::PolygonMatte { vertices, .. } => assert_eq!(vertices.len(), 4),
+            other => panic!("expected PolygonMatte, got {other:?}"),
         }
     }
 

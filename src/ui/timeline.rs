@@ -549,6 +549,125 @@ pub fn show_inspector(state: &mut state::AppState, ui: &mut egui::Ui) {
                         );
                     });
                         });
+                    egui::CollapsingHeader::new("Mask")
+                        .id_salt("clip_mask")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Shape");
+                        egui::ComboBox::from_id_salt("clip_mask_shape")
+                            .selected_text(clip.mask.shape.label())
+                            .show_ui(ui, |ui| {
+                                for s in state::MaskShape::ALL {
+                                    ui.selectable_value(&mut clip.mask.shape, s, s.label());
+                                }
+                            });
+                    });
+                    if clip.mask.is_active() {
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut clip.mask.invert, "Invert");
+                            ui.separator();
+                            ui.label("Feather");
+                            ui.add(
+                                egui::DragValue::new(&mut clip.mask.feather)
+                                    .range(0..=200)
+                                    .suffix(" px"),
+                            );
+                        });
+                        match clip.mask.shape {
+                            state::MaskShape::Rectangle => {
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label("X");
+                                    ui.add(
+                                        egui::Slider::new(&mut clip.mask.rect_x, 0.0..=100.0)
+                                            .suffix(" %")
+                                            .fixed_decimals(0),
+                                    );
+                                    ui.separator();
+                                    ui.label("Y");
+                                    ui.add(
+                                        egui::Slider::new(&mut clip.mask.rect_y, 0.0..=100.0)
+                                            .suffix(" %")
+                                            .fixed_decimals(0),
+                                    );
+                                });
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label("W");
+                                    ui.add(
+                                        egui::Slider::new(&mut clip.mask.rect_w, 1.0..=100.0)
+                                            .suffix(" %")
+                                            .fixed_decimals(0),
+                                    );
+                                    ui.separator();
+                                    ui.label("H");
+                                    ui.add(
+                                        egui::Slider::new(&mut clip.mask.rect_h, 1.0..=100.0)
+                                            .suffix(" %")
+                                            .fixed_decimals(0),
+                                    );
+                                });
+                            }
+                            state::MaskShape::Luma => {
+                                ui.horizontal(|ui| {
+                                    ui.label("Threshold");
+                                    ui.add(
+                                        egui::Slider::new(
+                                            &mut clip.mask.luma_threshold,
+                                            0.0..=1.0,
+                                        )
+                                        .fixed_decimals(2),
+                                    );
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("Tolerance");
+                                    ui.add(
+                                        egui::Slider::new(
+                                            &mut clip.mask.luma_tolerance,
+                                            0.0..=1.0,
+                                        )
+                                        .fixed_decimals(2),
+                                    );
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("Softness");
+                                    ui.add(
+                                        egui::Slider::new(
+                                            &mut clip.mask.luma_softness,
+                                            0.0..=1.0,
+                                        )
+                                        .fixed_decimals(2),
+                                    );
+                                });
+                            }
+                            state::MaskShape::Polygon => {
+                                ui.horizontal(|ui| {
+                                    if ui.button("Reset to quad").clicked() {
+                                        clip.mask.polygon = state::Mask::default_quad();
+                                    }
+                                    if ui
+                                        .add_enabled(
+                                            !clip.mask.polygon.is_empty(),
+                                            egui::Button::new("Clear"),
+                                        )
+                                        .clicked()
+                                    {
+                                        clip.mask.polygon.clear();
+                                    }
+                                    ui.label(format!("{} pts", clip.mask.polygon.len()));
+                                });
+                                ui.weak(
+                                    "On the monitor (paused): drag vertices, double-click to add, \
+                                     right-click to remove. Needs 3–16 points.",
+                                );
+                            }
+                            state::MaskShape::None => {}
+                        }
+                        ui.weak(
+                            "Region-composite (garbage matte): keeps the region, rest transparent. \
+                             Most useful on a V2 overlay clip.",
+                        );
+                    }
+                        });
                     egui::CollapsingHeader::new("Color Grading")
                         .id_salt("clip_color_grading")
                         .default_open(true)
@@ -929,6 +1048,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         overlay: tc.overlay.clone(),
                         subtitle: tc.subtitle.clone(),
                         keying: tc.keying,
+                        mask: tc.mask.clone(),
                     }
                 };
                 let tracks = &state.timeline.tracks;
@@ -1410,6 +1530,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 overlay: tc.overlay.clone(),
                 subtitle: tc.subtitle.clone(),
                 keying: tc.keying,
+                mask: tc.mask.clone(),
             };
             let tracks = &state.timeline.tracks;
             let audio_start = state.timeline.audio_track_start();
@@ -1503,6 +1624,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                             overlay: tc.overlay.clone(),
                             subtitle: tc.subtitle.clone(),
                             keying: tc.keying,
+                            mask: tc.mask.clone(),
                         };
                         let tracks = &state.timeline.tracks;
                         let audio_start = state.timeline.audio_track_start();
@@ -3341,6 +3463,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 overlay: tc.overlay.clone(),
                 subtitle: tc.subtitle.clone(),
                 keying: tc.keying,
+                mask: tc.mask.clone(),
             };
             let tracks = &state.timeline.tracks;
             let audio_start = state.timeline.audio_track_start();
@@ -3444,6 +3567,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             overlay: state::Overlay::default(),
             subtitle: state::Subtitle::default(),
             keying: state::Keying::default(),
+            mask: state::Mask::default(),
         };
         // Sorted insert so that out-of-order drops don't corrupt array order.
         let track = &mut state.timeline.tracks[track_idx].clips;
@@ -3589,6 +3713,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 overlay: state.timeline.tracks[ti].clips[ci].overlay.clone(),
                 subtitle: state.timeline.tracks[ti].clips[ci].subtitle.clone(),
                 keying: state.timeline.tracks[ti].clips[ci].keying,
+                mask: state.timeline.tracks[ti].clips[ci].mask.clone(),
             };
             state.timeline.tracks[ti].clips.insert(ci + 1, right);
         }
