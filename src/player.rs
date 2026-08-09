@@ -69,6 +69,8 @@ pub struct TrackClipData {
     pub keying: crate::state::Keying,
     /// Per-clip region-composite mask.
     pub mask: crate::state::Mask,
+    /// Per-clip keyframe animation (opacity now; more properties in later phases).
+    pub animation: crate::state::ClipAnimation,
 }
 
 // ── EguiFrameSink ─────────────────────────────────────────────────────────────
@@ -495,6 +497,9 @@ pub fn spawn_timeline_player(
             c = crate::export::apply_subtitle(c, &tc.subtitle);
             // Region-composite mask — shapes the final alpha, matches export.
             c = crate::export::apply_mask(c, &tc.mask, tc.width, tc.height);
+            // Per-clip keyframe animation (opacity) — matches export. Opacity animates
+            // in the preview once avio #1292 lands; export animates now (avio #1291).
+            c = crate::export::apply_animation(c, &tc.animation, tc.start_on_track);
             #[allow(clippy::float_cmp)]
             if tc.opacity != 1.0 {
                 c = c.with_opacity(tc.opacity);

@@ -1115,6 +1115,146 @@ impl Mask {
     }
 }
 
+/// Easing applied for a keyframe segment (from this key to the next). A demo-facing
+/// subset of `avio::Easing` (no Bézier) so [`ClipAnimation`] can derive `PartialEq`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub enum KeyEasing {
+    /// Constant-rate interpolation.
+    #[default]
+    Linear,
+    /// Cubic ease-in (slow start).
+    EaseIn,
+    /// Cubic ease-out (slow end).
+    EaseOut,
+    /// Cubic ease-in-out (slow at both ends).
+    EaseInOut,
+    /// Snap to the next value (no interpolation).
+    Hold,
+}
+
+impl KeyEasing {
+    /// All variants, for UI selectors.
+    pub const ALL: [KeyEasing; 5] = [
+        KeyEasing::Linear,
+        KeyEasing::EaseIn,
+        KeyEasing::EaseOut,
+        KeyEasing::EaseInOut,
+        KeyEasing::Hold,
+    ];
+
+    /// Human-readable label.
+    pub fn label(self) -> &'static str {
+        match self {
+            KeyEasing::Linear => "Linear",
+            KeyEasing::EaseIn => "Ease In",
+            KeyEasing::EaseOut => "Ease Out",
+            KeyEasing::EaseInOut => "Ease In-Out",
+            KeyEasing::Hold => "Hold",
+        }
+    }
+}
+
+/// One keyframe: a **clip-local** time (seconds from the clip's start on the track),
+/// a value, and the easing applied from this key to the next.
+#[derive(Clone, Copy, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Key {
+    /// Clip-local time in seconds (`0.0` = the clip's start on the timeline).
+    pub t_secs: f64,
+    /// Property value at this keyframe.
+    pub value: f64,
+    /// Easing from this keyframe to the next.
+    #[serde(default)]
+    pub easing: KeyEasing,
+}
+
+/// A keyframe track for a single property. Empty = static (no animation).
+#[derive(Clone, PartialEq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct KeyTrack {
+    /// Keyframes, kept sorted by `t_secs`.
+    #[serde(default)]
+    pub keys: Vec<Key>,
+}
+
+impl KeyTrack {
+    /// `true` when the track drives an animation (has at least one key).
+    pub fn is_active(&self) -> bool {
+        !self.keys.is_empty()
+    }
+
+    /// Inserts a keyframe at `t_secs`, replacing any existing key at the same time
+    /// and keeping the list sorted by time.
+    pub fn insert(&mut self, t_secs: f64, value: f64, easing: KeyEasing) {
+        let key = Key {
+            t_secs,
+            value,
+            easing,
+        };
+        match self
+            .keys
+            .iter()
+            .position(|k| (k.t_secs - t_secs).abs() < 1e-6)
+        {
+            Some(i) => self.keys[i] = key,
+            None => {
+                let pos = self.keys.partition_point(|k| k.t_secs < t_secs);
+                self.keys.insert(pos, key);
+            }
+        }
+    }
+}
+
+/// Per-clip keyframe animation of transform / opacity properties.
+///
+/// Empty tracks are static (no-op). Keyframe times are **clip-local**;
+/// `export::apply_animation` offsets them by the clip's `start_on_track` into the
+/// timeline-global tracks avio evaluates at the composition graph's output PTS.
+///
+/// D1 wires `opacity` end-to-end (export via avio #1291; preview parity lands with
+/// avio #1292). `pos_x`/`pos_y`/`scale`/`rotation` are reserved for later phases.
+#[derive(Clone, PartialEq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct ClipAnimation {
+    /// Opacity track (`0.0`..=`1.0`).
+    #[serde(default)]
+    pub opacity: KeyTrack,
+    /// Overlay X-position track (pixels). Reserved (avio #1293).
+    #[serde(default)]
+    pub pos_x: KeyTrack,
+    /// Overlay Y-position track (pixels). Reserved (avio #1293).
+    #[serde(default)]
+    pub pos_y: KeyTrack,
+    /// Scale track (`1.0` = 100%). Reserved (avio #1297).
+    #[serde(default)]
+    pub scale: KeyTrack,
+    /// Rotation track (degrees). Reserved (avio #1296).
+    #[serde(default)]
+    pub rotation: KeyTrack,
+}
+
+impl ClipAnimation {
+    /// `true` when any property track is animated.
+    pub fn is_active(&self) -> bool {
+        self.opacity.is_active()
+            || self.pos_x.is_active()
+            || self.pos_y.is_active()
+            || self.scale.is_active()
+            || self.rotation.is_active()
+    }
+
+    /// Active `(label, track)` pairs, for timeline visualization and tooltips.
+    pub fn active_tracks(&self) -> Vec<(&'static str, &KeyTrack)> {
+        [
+            ("Opacity", &self.opacity),
+            ("Position X", &self.pos_x),
+            ("Position Y", &self.pos_y),
+            ("Scale", &self.scale),
+            ("Rotation", &self.rotation),
+        ]
+        .into_iter()
+        .filter(|(_, t)| t.is_active())
+        .collect()
+    }
+}
+
 #[derive(Clone, PartialEq)]
 pub struct TimelineClip {
     pub source_index: usize,
@@ -1197,6 +1337,8 @@ pub struct TimelineClip {
     pub keying: Keying,
     /// Per-clip region-composite mask. Default: none.
     pub mask: Mask,
+    /// Per-clip keyframe animation (opacity now; position/scale/rotation reserved).
+    pub animation: ClipAnimation,
 }
 
 pub struct TimelineState {
