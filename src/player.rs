@@ -67,6 +67,8 @@ pub struct TrackClipData {
     pub subtitle: crate::state::Subtitle,
     /// Per-clip chroma key (green/blue screen).
     pub keying: crate::state::Keying,
+    /// Per-clip region-composite mask.
+    pub mask: crate::state::Mask,
 }
 
 // ── EguiFrameSink ─────────────────────────────────────────────────────────────
@@ -491,6 +493,8 @@ pub fn spawn_timeline_player(
             c = crate::export::apply_overlay(c, &tc.overlay);
             // Burned-in subtitle — on top of the overlay, matches export.
             c = crate::export::apply_subtitle(c, &tc.subtitle);
+            // Region-composite mask — shapes the final alpha, matches export.
+            c = crate::export::apply_mask(c, &tc.mask, tc.width, tc.height);
             #[allow(clippy::float_cmp)]
             if tc.opacity != 1.0 {
                 c = c.with_opacity(tc.opacity);
