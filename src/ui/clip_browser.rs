@@ -672,6 +672,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
                 subtitle: state::Subtitle::default(),
                 keying: state::Keying::default(),
                 mask: state::Mask::default(),
+                animation: state::ClipAnimation::default(),
             });
         }
         let can_trim = clip.in_point.is_some() && clip.out_point.is_some();

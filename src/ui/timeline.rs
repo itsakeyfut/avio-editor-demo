@@ -198,6 +198,9 @@ pub fn show_inspector(state: &mut state::AppState, ui: &mut egui::Ui) {
             .and_then(|n| n.to_str())
             .unwrap_or("(clip)")
             .to_owned();
+        // Captured before the mutable clip borrow below; used to place opacity
+        // keyframes at the current playhead (converted to clip-local time).
+        let playhead_secs = state.timeline_playhead_secs;
         if let Some(clip) = state
             .timeline
             .tracks
@@ -240,6 +243,95 @@ pub fn show_inspector(state: &mut state::AppState, ui: &mut egui::Ui) {
                             clip.opacity = (opacity_pct / 100.0).clamp(0.0, 1.0);
                         }
                     });
+                    // ── Opacity keyframes ──────────────────────────────────────
+                    // Animate opacity over time. Keys are authored at the playhead
+                    // (clip-local time) with the current opacity value; both preview
+                    // and export animate (avio #1291 / #1292). A key's easing controls
+                    // the segment FROM that key TO the next one, so it is shown only on
+                    // keys that have a following segment (the last key's easing is unused).
+                    egui::CollapsingHeader::new("Opacity Keyframes")
+                        .id_salt("clip_opacity_keys")
+                        .default_open(clip.animation.opacity.is_active())
+                        .show(ui, |ui| {
+                            let clip_local =
+                                (playhead_secs - clip.start_on_track.as_secs_f64()).max(0.0);
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .button("＋ Key @ playhead")
+                                    .on_hover_text(format!(
+                                        "Add an opacity key at {clip_local:.2}s (clip-local) \
+                                         = {:.0}%",
+                                        clip.opacity * 100.0
+                                    ))
+                                    .clicked()
+                                {
+                                    clip.animation.opacity.insert(
+                                        clip_local,
+                                        f64::from(clip.opacity),
+                                        state::KeyEasing::Linear,
+                                    );
+                                }
+                                if clip.animation.opacity.is_active()
+                                    && ui.button("Clear").clicked()
+                                {
+                                    clip.animation.opacity.keys.clear();
+                                }
+                            });
+                            if clip.animation.opacity.is_active() {
+                                ui.weak(
+                                    "Easing is the ramp to the NEXT key. Re-play to preview edits.",
+                                );
+                                let n = clip.animation.opacity.keys.len();
+                                let mut to_delete: Option<usize> = None;
+                                for (i, k) in
+                                    clip.animation.opacity.keys.iter_mut().enumerate()
+                                {
+                                    ui.horizontal(|ui| {
+                                        ui.label(format!("{:.2}s", k.t_secs));
+                                        let mut v_pct = k.value * 100.0;
+                                        if ui
+                                            .add(
+                                                egui::DragValue::new(&mut v_pct)
+                                                    .range(0.0..=100.0)
+                                                    .suffix(" %")
+                                                    .fixed_decimals(0),
+                                            )
+                                            .changed()
+                                        {
+                                            k.value = (v_pct / 100.0).clamp(0.0, 1.0);
+                                        }
+                                        // Easing drives the segment to the next key; the
+                                        // last key has none, so hide its selector.
+                                        if i + 1 < n {
+                                            egui::ComboBox::from_id_salt((
+                                                "opacity_key_ease",
+                                                i,
+                                            ))
+                                            .selected_text(k.easing.label())
+                                            .show_ui(ui, |ui| {
+                                                for e in state::KeyEasing::ALL {
+                                                    ui.selectable_value(
+                                                        &mut k.easing,
+                                                        e,
+                                                        e.label(),
+                                                    );
+                                                }
+                                            });
+                                        } else {
+                                            ui.weak("→ end");
+                                        }
+                                        if ui.button("✖").clicked() {
+                                            to_delete = Some(i);
+                                        }
+                                    });
+                                }
+                                if let Some(i) = to_delete {
+                                    clip.animation.opacity.keys.remove(i);
+                                }
+                            } else {
+                                ui.weak("No keys — opacity is static.");
+                            }
+                        });
                     // Blend mode is only meaningful for overlay (V2+) clips.
                     if ti >= 1 {
                         ui.horizontal(|ui| {
@@ -1049,6 +1141,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         subtitle: tc.subtitle.clone(),
                         keying: tc.keying,
                         mask: tc.mask.clone(),
+                        animation: tc.animation.clone(),
                     }
                 };
                 let tracks = &state.timeline.tracks;
@@ -1531,6 +1624,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 subtitle: tc.subtitle.clone(),
                 keying: tc.keying,
                 mask: tc.mask.clone(),
+                animation: tc.animation.clone(),
             };
             let tracks = &state.timeline.tracks;
             let audio_start = state.timeline.audio_track_start();
@@ -1625,6 +1719,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                             subtitle: tc.subtitle.clone(),
                             keying: tc.keying,
                             mask: tc.mask.clone(),
+                            animation: tc.animation.clone(),
                         };
                         let tracks = &state.timeline.tracks;
                         let audio_start = state.timeline.audio_track_start();
@@ -2351,6 +2446,61 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                     egui::Color32::WHITE,
                                 );
 
+                                // Keyframe lane (industry-standard: Premiere/FCP/CapCut
+                                // show diamonds at each key's TIME on a strip inside the
+                                // clip). Because diamonds are positioned per key-time, a
+                                // cut clip only shows the keys that belong to it. FCP-style
+                                // double diamond marks a time where >1 property is keyed.
+                                if tc.animation.is_active() {
+                                    let lane_h = 7.0_f32;
+                                    let lane = egui::Rect::from_min_max(
+                                        egui::pos2(cr.left(), cr.bottom() - lane_h),
+                                        egui::pos2(cr.right(), cr.bottom()),
+                                    )
+                                    .intersect(cr);
+                                    let clipped =
+                                        ui.painter().with_clip_rect(lane.intersect(lane_rect));
+                                    clipped.rect_filled(
+                                        lane,
+                                        0.0,
+                                        egui::Color32::from_black_alpha(140),
+                                    );
+                                    let cy = lane.center().y;
+                                    // Group key times (ms) across all animated properties.
+                                    let mut counts: std::collections::BTreeMap<i64, u32> =
+                                        std::collections::BTreeMap::new();
+                                    for (_, track) in tc.animation.active_tracks() {
+                                        for k in &track.keys {
+                                            *counts
+                                                .entry((k.t_secs * 1000.0).round() as i64)
+                                                .or_insert(0) += 1;
+                                        }
+                                    }
+                                    let diamond = |cx: f32, r: f32| {
+                                        vec![
+                                            egui::pos2(cx, cy - r),
+                                            egui::pos2(cx + r, cy),
+                                            egui::pos2(cx, cy + r),
+                                            egui::pos2(cx - r, cy),
+                                        ]
+                                    };
+                                    for (ms, count) in counts {
+                                        let x = cr.left() + (ms as f32 / 1000.0) * pps;
+                                        clipped.add(egui::Shape::convex_polygon(
+                                            diamond(x, 3.5),
+                                            egui::Color32::WHITE,
+                                            egui::Stroke::new(1.0, egui::Color32::BLACK),
+                                        ));
+                                        if count > 1 {
+                                            clipped.add(egui::Shape::convex_polygon(
+                                                diamond(x, 5.5),
+                                                egui::Color32::TRANSPARENT,
+                                                egui::Stroke::new(1.0, egui::Color32::WHITE),
+                                            ));
+                                        }
+                                    }
+                                }
+
                                 // Silence region overlays — audio tracks only
                                 if track.kind == state::TrackKind::Audio {
                                     for &(start, end) in &source.silence_regions {
@@ -2433,6 +2583,34 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                 let clip_id = egui::Id::new(("tl_clip", track_idx, clip_i));
                                 let clip_resp =
                                     ui.interact(cr, clip_id, egui::Sense::click_and_drag());
+
+                                // Hover popup: which keyframe animations this clip carries.
+                                if tc.animation.is_active() {
+                                    clip_resp.clone().on_hover_ui(|ui| {
+                                        ui.strong("◆ Keyframe Animation");
+                                        for (label, track) in tc.animation.active_tracks() {
+                                            ui.label(format!(
+                                                "{label} ({} keys)",
+                                                track.keys.len()
+                                            ));
+                                            let n = track.keys.len();
+                                            for (i, k) in track.keys.iter().enumerate() {
+                                                // Opacity values are 0..1 → show as %.
+                                                let val = if label == "Opacity" {
+                                                    format!("{:.0}%", k.value * 100.0)
+                                                } else {
+                                                    format!("{:.2}", k.value)
+                                                };
+                                                let ease = if i + 1 < n {
+                                                    format!("  →{}", k.easing.label())
+                                                } else {
+                                                    String::new()
+                                                };
+                                                ui.weak(format!("  {:.2}s  {val}{ease}", k.t_secs));
+                                            }
+                                        }
+                                    });
+                                }
 
                                 // Cursor change and edge-proximity flag for trim handles
                                 let near_trim_edge = clip_resp.hovered()
@@ -3464,6 +3642,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 subtitle: tc.subtitle.clone(),
                 keying: tc.keying,
                 mask: tc.mask.clone(),
+                animation: tc.animation.clone(),
             };
             let tracks = &state.timeline.tracks;
             let audio_start = state.timeline.audio_track_start();
@@ -3568,6 +3747,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             subtitle: state::Subtitle::default(),
             keying: state::Keying::default(),
             mask: state::Mask::default(),
+            animation: state::ClipAnimation::default(),
         };
         // Sorted insert so that out-of-order drops don't corrupt array order.
         let track = &mut state.timeline.tracks[track_idx].clips;
@@ -3714,6 +3894,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 subtitle: state.timeline.tracks[ti].clips[ci].subtitle.clone(),
                 keying: state.timeline.tracks[ti].clips[ci].keying,
                 mask: state.timeline.tracks[ti].clips[ci].mask.clone(),
+                animation: state.timeline.tracks[ti].clips[ci].animation.clone(),
             };
             state.timeline.tracks[ti].clips.insert(ci + 1, right);
         }
