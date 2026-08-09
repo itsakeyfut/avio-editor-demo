@@ -54,6 +54,10 @@ pub struct ProjectTimelineClip {
     pub opacity: f32,
     pub blend_mode: String,
     #[serde(default)]
+    pub position_x: f32,
+    #[serde(default)]
+    pub position_y: f32,
+    #[serde(default)]
     pub lut_path: Option<String>,
     #[serde(default = "default_wb_temperature")]
     pub wb_temperature: u32,
@@ -239,6 +243,8 @@ fn timeline_clip_to_project(tc: &TimelineClip, clips: &[ImportedClip]) -> Projec
         speed: tc.speed,
         opacity: tc.opacity,
         blend_mode: blend_mode_to_str(tc.blend_mode).to_string(),
+        position_x: tc.position_x,
+        position_y: tc.position_y,
         lut_path: tc
             .lut_path
             .as_ref()
@@ -292,6 +298,8 @@ fn project_to_timeline_clip(
         speed: ptc.speed,
         opacity: ptc.opacity,
         blend_mode: blend_mode_from_str(&ptc.blend_mode),
+        position_x: ptc.position_x,
+        position_y: ptc.position_y,
         lut_path: ptc.lut_path.as_ref().map(PathBuf::from),
         wb_temperature: ptc.wb_temperature,
         wb_tint: ptc.wb_tint,

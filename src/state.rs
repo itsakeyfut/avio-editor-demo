@@ -1297,6 +1297,11 @@ pub struct TimelineClip {
     /// overlay tracks — `FilterGraphBuilder::blend()` is not wired into the `Clip` pipeline
     /// (docs/issue43.md).
     pub blend_mode: avio::BlendMode,
+    /// Static overlay X position in canvas pixels for a Picture-in-Picture (V2+) clip.
+    /// Default 0.0. Maps to `avio::Clip::with_position`; superseded by `animation.pos_x`.
+    pub position_x: f32,
+    /// Static overlay Y position in canvas pixels (see [`position_x`](Self::position_x)).
+    pub position_y: f32,
     /// Per-clip 3D LUT (.cube) file path. `None` = no LUT.
     /// Applied on export via `avio::Clip::with_video_effect(FilterStep::Lut3d)`.
     /// Export-only: not shown in the monitor preview (v1).

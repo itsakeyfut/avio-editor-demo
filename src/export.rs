@@ -36,6 +36,9 @@ pub struct ExportClip {
     pub opacity: f32,
     /// Per-clip blend mode. Forwarded to `Clip::with_blend_mode`.
     pub blend_mode: avio::BlendMode,
+    /// Static overlay position (canvas px) for a PiP (V2+) clip. `Clip::with_position`.
+    pub position_x: f32,
+    pub position_y: f32,
     /// Optional proxy file to decode from. When `Some`, forwarded to `Clip::proxy`
     /// so avio renders from the proxy and scales up to the original resolution.
     pub proxy_path: Option<PathBuf>,
@@ -721,42 +724,61 @@ fn easing_to_avio(e: crate::state::KeyEasing) -> avio::Easing {
 /// Converts a clip-local demo [`KeyTrack`](crate::state::KeyTrack) into a
 /// timeline-global `avio::AnimationTrack`: each key's clip-local `t_secs` is offset
 /// by the clip's `start` on the timeline (avio evaluates tracks at the composition
-/// graph's output PTS), and values are clamped to `[lo, hi]`.
+/// graph's output PTS). When `clamp` is `Some((lo, hi))` values are clamped to that
+/// range (e.g. opacity `0..1`); position tracks pass `None`.
 fn keytrack_to_avio(
     kt: &crate::state::KeyTrack,
     start: Duration,
-    lo: f64,
-    hi: f64,
+    clamp: Option<(f64, f64)>,
 ) -> avio::AnimationTrack<f64> {
     let mut track = avio::AnimationTrack::new();
     for k in &kt.keys {
         let ts = start + Duration::from_secs_f64(k.t_secs.max(0.0));
-        track = track.push(avio::Keyframe::new(
-            ts,
-            k.value.clamp(lo, hi),
-            easing_to_avio(k.easing),
-        ));
+        let v = match clamp {
+            Some((lo, hi)) => k.value.clamp(lo, hi),
+            None => k.value,
+        };
+        track = track.push(avio::Keyframe::new(ts, v, easing_to_avio(k.easing)));
     }
     track
 }
 
-/// Attaches per-clip keyframe animation to the avio `Clip`.
+/// Attaches per-clip static position + keyframe animation to the avio `Clip`.
 ///
-/// D1 wires the **opacity** track: clip-local keyframe times are offset by
-/// `start_on_track` into the timeline-global track avio evaluates, and applied via
-/// `Clip::with_opacity_track` (drives the `colorchannelmixer` alpha per frame). No-op
-/// when the track is empty. Shared by export and preview so both match. (Opacity
-/// animates in export now via avio #1291; preview parity lands with avio #1292.)
+/// - Static overlay position (`position` px) → `Clip::with_position` (baseline;
+///   a per-axis track overrides it in avio).
+/// - `opacity` track → `Clip::with_opacity_track` (drives `colorchannelmixer` alpha).
+/// - `pos_x`/`pos_y` tracks → `Clip::with_x_track`/`with_y_track` (drive `overlay`
+///   x/y, avio #1293).
+///
+/// Clip-local keyframe times are offset by `start_on_track` into the timeline-global
+/// tracks avio evaluates. No-op for empty tracks / zero position. Shared by export and
+/// preview so both match.
 pub fn apply_animation(
     clip: avio::Clip,
     anim: &crate::state::ClipAnimation,
     start_on_track: Duration,
+    position: (f32, f32),
 ) -> avio::Clip {
-    if anim.opacity.is_active() {
-        clip.with_opacity_track(keytrack_to_avio(&anim.opacity, start_on_track, 0.0, 1.0))
-    } else {
-        clip
+    let mut clip = clip;
+    #[allow(clippy::float_cmp)]
+    if position.0 != 0.0 || position.1 != 0.0 {
+        clip = clip.with_position(f64::from(position.0), f64::from(position.1));
     }
+    if anim.opacity.is_active() {
+        clip = clip.with_opacity_track(keytrack_to_avio(
+            &anim.opacity,
+            start_on_track,
+            Some((0.0, 1.0)),
+        ));
+    }
+    if anim.pos_x.is_active() {
+        clip = clip.with_x_track(keytrack_to_avio(&anim.pos_x, start_on_track, None));
+    }
+    if anim.pos_y.is_active() {
+        clip = clip.with_y_track(keytrack_to_avio(&anim.pos_y, start_on_track, None));
+    }
+    clip
 }
 
 fn clips_to_avio(clips: Vec<ExportClip>, canvas: Option<(u32, u32)>) -> Vec<avio::Clip> {
@@ -847,9 +869,14 @@ fn clips_to_avio(clips: Vec<ExportClip>, canvas: Option<(u32, u32)>) -> Vec<avio
             // Region-composite mask (garbage matte) — shapes the final alpha.
             // Shared with the preview. No-op when no mask shape is selected.
             let clip = apply_mask(clip, &c.mask, c.width, c.height);
-            // Per-clip keyframe animation (opacity). Sets an opacity track that takes
-            // precedence over the static opacity below. Shared with the preview.
-            let clip = apply_animation(clip, &c.animation, c.start_on_track);
+            // Per-clip static position + keyframe animation (opacity, position). Tracks
+            // take precedence over the static opacity/position. Shared with the preview.
+            let clip = apply_animation(
+                clip,
+                &c.animation,
+                c.start_on_track,
+                (c.position_x, c.position_y),
+            );
             #[allow(clippy::float_cmp)]
             let clip = if c.opacity != 1.0 {
                 clip.with_opacity(c.opacity)
@@ -2094,7 +2121,12 @@ mod tests {
         use super::apply_animation;
 
         let anim = crate::state::ClipAnimation::default();
-        let clip = apply_animation(avio::Clip::new("t.mp4"), &anim, std::time::Duration::ZERO);
+        let clip = apply_animation(
+            avio::Clip::new("t.mp4"),
+            &anim,
+            std::time::Duration::ZERO,
+            (0.0, 0.0),
+        );
         assert!(clip.opacity_track.is_none());
     }
 
@@ -2110,7 +2142,12 @@ mod tests {
         anim.opacity.insert(0.0, 0.0, KeyEasing::Linear);
         anim.opacity.insert(1.0, 1.0, KeyEasing::Linear);
         // Clip placed at 2s on the timeline.
-        let clip = apply_animation(avio::Clip::new("t.mp4"), &anim, Duration::from_secs(2));
+        let clip = apply_animation(
+            avio::Clip::new("t.mp4"),
+            &anim,
+            Duration::from_secs(2),
+            (0.0, 0.0),
+        );
         let track = clip.opacity_track.expect("opacity track set");
         // Held at the first value before the clip's global start.
         assert!(track.value_at(Duration::from_secs(2)).abs() < 1e-9);
@@ -2132,7 +2169,7 @@ mod tests {
         let mut ease = ClipAnimation::default();
         ease.opacity.insert(0.0, 0.0, KeyEasing::EaseInOut);
         ease.opacity.insert(2.0, 1.0, KeyEasing::Linear);
-        let et = apply_animation(avio::Clip::new("t.mp4"), &ease, Duration::ZERO)
+        let et = apply_animation(avio::Clip::new("t.mp4"), &ease, Duration::ZERO, (0.0, 0.0))
             .opacity_track
             .expect("track");
         let q = et.value_at(Duration::from_millis(500)); // t=0.5s of a 2s ramp
@@ -2146,9 +2183,14 @@ mod tests {
         let mut on_last = ClipAnimation::default();
         on_last.opacity.insert(0.0, 0.0, KeyEasing::Linear);
         on_last.opacity.insert(2.0, 1.0, KeyEasing::EaseInOut);
-        let lt = apply_animation(avio::Clip::new("t.mp4"), &on_last, Duration::ZERO)
-            .opacity_track
-            .expect("track");
+        let lt = apply_animation(
+            avio::Clip::new("t.mp4"),
+            &on_last,
+            Duration::ZERO,
+            (0.0, 0.0),
+        )
+        .opacity_track
+        .expect("track");
         assert!(
             (lt.value_at(Duration::from_millis(500)) - 0.25).abs() < 1e-6,
             "easing on the last key must not change the segment (stays linear)"
@@ -2158,7 +2200,7 @@ mod tests {
         let mut hold = ClipAnimation::default();
         hold.opacity.insert(0.0, 0.0, KeyEasing::Hold);
         hold.opacity.insert(2.0, 1.0, KeyEasing::Linear);
-        let ht = apply_animation(avio::Clip::new("t.mp4"), &hold, Duration::ZERO)
+        let ht = apply_animation(avio::Clip::new("t.mp4"), &hold, Duration::ZERO, (0.0, 0.0))
             .opacity_track
             .expect("track");
         assert!(
@@ -2169,5 +2211,33 @@ mod tests {
             (ht.value_at(Duration::from_secs(2)) - 1.0).abs() < 1e-9,
             "Hold snaps at end"
         );
+    }
+
+    /// Static position maps to `Clip::with_position`; pos_x/pos_y tracks map to
+    /// x/y tracks (px, unclamped) offset to timeline-global time.
+    #[test]
+    fn animation_position_static_and_tracks() {
+        use super::apply_animation;
+        use crate::state::{ClipAnimation, KeyEasing};
+        use std::time::Duration;
+
+        // Static position, no tracks.
+        let anim = ClipAnimation::default();
+        let clip = apply_animation(avio::Clip::new("t.mp4"), &anim, Duration::ZERO, (100.0, 50.0));
+        assert_eq!((clip.x, clip.y), (100.0, 50.0));
+        assert!(clip.x_track.is_none() && clip.y_track.is_none());
+
+        // Position tracks: offset by start_on_track (1s), unclamped px.
+        let mut a = ClipAnimation::default();
+        a.pos_x.insert(0.0, 0.0, KeyEasing::Linear);
+        a.pos_x.insert(2.0, 640.0, KeyEasing::Linear);
+        a.pos_y.insert(0.0, 0.0, KeyEasing::Linear);
+        a.pos_y.insert(2.0, 360.0, KeyEasing::Linear);
+        let clip = apply_animation(avio::Clip::new("t.mp4"), &a, Duration::from_secs(1), (0.0, 0.0));
+        let xt = clip.x_track.expect("x track");
+        let yt = clip.y_track.expect("y track");
+        // Clip-local 1s → global 2s → midpoint: x=320, y=180.
+        assert!((xt.value_at(Duration::from_secs(2)) - 320.0).abs() < 1e-9);
+        assert!((yt.value_at(Duration::from_secs(2)) - 180.0).abs() < 1e-9);
     }
 }

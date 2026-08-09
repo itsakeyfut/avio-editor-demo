@@ -45,6 +45,9 @@ pub struct TrackClipData {
     pub opacity: f32,
     /// Per-clip blend mode. Forwarded to `Clip::with_blend_mode`.
     pub blend_mode: avio::BlendMode,
+    /// Static overlay position (canvas px) for a PiP (V2+) clip. `Clip::with_position`.
+    pub position_x: f32,
+    pub position_y: f32,
     /// Vignette strength percentage (`0.0` = off) and normalized centre X/Y (%).
     pub vignette: f32,
     pub vignette_x: f32,
@@ -499,7 +502,12 @@ pub fn spawn_timeline_player(
             c = crate::export::apply_mask(c, &tc.mask, tc.width, tc.height);
             // Per-clip keyframe animation (opacity) — matches export. Opacity animates
             // in the preview once avio #1292 lands; export animates now (avio #1291).
-            c = crate::export::apply_animation(c, &tc.animation, tc.start_on_track);
+            c = crate::export::apply_animation(
+                c,
+                &tc.animation,
+                tc.start_on_track,
+                (tc.position_x, tc.position_y),
+            );
             #[allow(clippy::float_cmp)]
             if tc.opacity != 1.0 {
                 c = c.with_opacity(tc.opacity);
