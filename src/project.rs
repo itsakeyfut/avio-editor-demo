@@ -57,6 +57,8 @@ pub struct ProjectTimelineClip {
     pub position_x: f32,
     #[serde(default)]
     pub position_y: f32,
+    #[serde(default = "default_scale_pct")]
+    pub scale_pct: f32,
     #[serde(default)]
     pub lut_path: Option<String>,
     #[serde(default = "default_wb_temperature")]
@@ -107,6 +109,10 @@ fn default_vignette_centre() -> f32 {
 
 fn default_gamma() -> f32 {
     1.0
+}
+
+fn default_scale_pct() -> f32 {
+    100.0
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -245,6 +251,7 @@ fn timeline_clip_to_project(tc: &TimelineClip, clips: &[ImportedClip]) -> Projec
         blend_mode: blend_mode_to_str(tc.blend_mode).to_string(),
         position_x: tc.position_x,
         position_y: tc.position_y,
+        scale_pct: tc.scale_pct,
         lut_path: tc
             .lut_path
             .as_ref()
@@ -300,6 +307,7 @@ fn project_to_timeline_clip(
         blend_mode: blend_mode_from_str(&ptc.blend_mode),
         position_x: ptc.position_x,
         position_y: ptc.position_y,
+        scale_pct: ptc.scale_pct,
         lut_path: ptc.lut_path.as_ref().map(PathBuf::from),
         wb_temperature: ptc.wb_temperature,
         wb_tint: ptc.wb_tint,

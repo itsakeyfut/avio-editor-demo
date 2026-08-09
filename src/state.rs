@@ -1302,6 +1302,10 @@ pub struct TimelineClip {
     pub position_x: f32,
     /// Static overlay Y position in canvas pixels (see [`position_x`](Self::position_x)).
     pub position_y: f32,
+    /// Static uniform scale as a percentage of the clip's source size (100.0 = full).
+    /// For a PiP (V2+) clip. Maps to `avio::FilterStep::ScaleAnimated`; superseded by
+    /// `animation.scale`.
+    pub scale_pct: f32,
     /// Per-clip 3D LUT (.cube) file path. `None` = no LUT.
     /// Applied on export via `avio::Clip::with_video_effect(FilterStep::Lut3d)`.
     /// Export-only: not shown in the monitor preview (v1).

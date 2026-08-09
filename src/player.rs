@@ -48,6 +48,8 @@ pub struct TrackClipData {
     /// Static overlay position (canvas px) for a PiP (V2+) clip. `Clip::with_position`.
     pub position_x: f32,
     pub position_y: f32,
+    /// Static uniform scale (% of source) for a PiP (V2+) clip. `FilterStep::ScaleAnimated`.
+    pub scale_pct: f32,
     /// Vignette strength percentage (`0.0` = off) and normalized centre X/Y (%).
     pub vignette: f32,
     pub vignette_x: f32,
@@ -500,13 +502,15 @@ pub fn spawn_timeline_player(
             c = crate::export::apply_subtitle(c, &tc.subtitle);
             // Region-composite mask — shapes the final alpha, matches export.
             c = crate::export::apply_mask(c, &tc.mask, tc.width, tc.height);
-            // Per-clip keyframe animation (opacity) — matches export. Opacity animates
-            // in the preview once avio #1292 lands; export animates now (avio #1291).
+            // Per-clip static transform + keyframe animation (opacity, position, scale)
+            // — matches export so the monitor reflects the rendered output.
             c = crate::export::apply_animation(
                 c,
                 &tc.animation,
                 tc.start_on_track,
                 (tc.position_x, tc.position_y),
+                tc.scale_pct,
+                (tc.width, tc.height),
             );
             #[allow(clippy::float_cmp)]
             if tc.opacity != 1.0 {
