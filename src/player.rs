@@ -41,6 +41,8 @@ pub struct TrackClipData {
     pub lut_path: Option<PathBuf>,
     /// Per-clip playback speed multiplier. `1.0` = normal speed.
     pub speed: f32,
+    /// Freeze-frame spec, applied in preview + export so clip lengths match. #143.
+    pub freeze: Option<crate::state::Freeze>,
     /// Per-clip opacity (`1.0` = fully opaque). Forwarded to `Clip::with_opacity`.
     pub opacity: f32,
     /// Per-clip blend mode. Forwarded to `Clip::with_blend_mode`.
@@ -454,6 +456,9 @@ pub fn spawn_timeline_player(
             if let Some(kind) = tc.transition {
                 c = c.with_transition(kind, tc.transition_duration);
             }
+            // Freeze frame — applied in preview too so the clip length matches export.
+            // (Reverse is export-only; the preview plays forward.) #143.
+            c = crate::export::apply_freeze(c, tc.freeze);
             // Chroma key first — key original colours before transform/grade,
             // producing alpha the composer reveals through. Matches export.
             c = crate::export::apply_keying(c, &tc.keying);

@@ -1260,6 +1260,17 @@ impl ClipAnimation {
     }
 }
 
+/// Freeze-frame spec: hold the frame at `at_secs` (clip-local) for `hold_secs`,
+/// extending the clip's timeline length by `hold_secs`. Maps to avio
+/// `FilterStep::FreezeFrame`. avio #143.
+#[derive(Clone, Copy, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Freeze {
+    /// Clip-local time (seconds) of the frame to hold. `>= 0.0`.
+    pub at_secs: f64,
+    /// Hold duration (seconds). `> 0.0`.
+    pub hold_secs: f64,
+}
+
 #[derive(Clone, PartialEq)]
 pub struct TimelineClip {
     pub source_index: usize,
@@ -1293,6 +1304,11 @@ pub struct TimelineClip {
     /// avio gap: `Clip` has no speed field; fast motion is approximated by trimming
     /// `out_point = in_point + source_dur / speed`. Slow motion is unsupported — docs/issue41.md.
     pub speed: f32,
+    /// Reverse playback (video + audio). Applied on **export only**; the realtime
+    /// preview plays forward. Maps to avio `FilterStep::Reverse` / `AReverse`. #143.
+    pub reverse: bool,
+    /// Optional freeze-frame: hold a frame for N seconds, extending the clip length. #143.
+    pub freeze: Option<Freeze>,
     /// Overlay opacity for V2 clips. Range: 0.0 (transparent)..=1.0 (fully opaque). Default: 1.0.
     /// avio gap: `Clip` has no opacity field; `TimelineBuilder` exposes per-track opacity via
     /// animation only — per-clip opacity is not supported (docs/issue43.md).

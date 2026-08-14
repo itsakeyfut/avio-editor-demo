@@ -69,7 +69,7 @@ fn snap_trim_edge(
                 (Some(i), None) => src.info.duration().saturating_sub(i).as_secs_f32(),
                 _ => src.info.duration().as_secs_f32(),
             };
-            let dur = src_dur / clip.speed;
+            let dur = src_dur / clip.speed + freeze_extra_secs(clip.freeze);
             let c_left = lane_left + clip.start_on_track.as_secs_f32() * pps;
             let c_right = c_left + dur * pps;
 
@@ -117,7 +117,7 @@ fn snap_clip_start(
                             (Some(i), None) => s.info.duration().saturating_sub(i).as_secs_f32(),
                             _ => s.info.duration().as_secs_f32(),
                         };
-                        let dur = src_dur / c.speed;
+                        let dur = src_dur / c.speed + freeze_extra_secs(c.freeze);
                         let cs = c.start_on_track.as_secs_f32();
                         (cs, cs + dur)
                     })
@@ -180,6 +180,12 @@ fn snap_clip_start(
 /// clip-local playhead time), and the key list with per-key value + easing. Mirrors
 /// the opacity keyframe panel; a key's easing controls the ramp to the next key, so it
 /// is shown only on keys that have a following segment.
+/// Extra timeline seconds a clip occupies because of a freeze-frame hold. #143.
+fn freeze_extra_secs(freeze: Option<state::Freeze>) -> f32 {
+    #[allow(clippy::cast_possible_truncation)]
+    freeze.map_or(0.0, |f| f.hold_secs as f32)
+}
+
 fn position_keyframe_panel(
     ui: &mut egui::Ui,
     id: &str,
@@ -318,6 +324,41 @@ pub fn show_inspector(state: &mut state::AppState, ui: &mut egui::Ui) {
                             .changed()
                         {
                             clip.speed = (speed_pct / 100.0).clamp(0.1, 4.0);
+                        }
+                    });
+                    // Reverse (export-only) + Freeze frame (hold + extend). #143.
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut clip.reverse, "Reverse").on_hover_text(
+                            "Plays backward on export; the preview plays forward (see #178).",
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        let clip_local =
+                            (playhead_secs - clip.start_on_track.as_secs_f64()).max(0.0);
+                        let mut freeze_on = clip.freeze.is_some();
+                        if ui.checkbox(&mut freeze_on, "Freeze frame").changed() {
+                            clip.freeze = freeze_on.then_some(state::Freeze {
+                                at_secs: clip_local,
+                                hold_secs: 1.0,
+                            });
+                        }
+                        if let Some(f) = clip.freeze.as_mut() {
+                            ui.label("at");
+                            ui.add(
+                                egui::DragValue::new(&mut f.at_secs)
+                                    .speed(0.1)
+                                    .suffix(" s")
+                                    .fixed_decimals(2),
+                            );
+                            ui.label("hold");
+                            ui.add(
+                                egui::DragValue::new(&mut f.hold_secs)
+                                    .speed(0.1)
+                                    .suffix(" s")
+                                    .fixed_decimals(2),
+                            );
+                            f.at_secs = f.at_secs.max(0.0);
+                            f.hold_secs = f.hold_secs.max(0.1);
                         }
                     });
                     ui.horizontal(|ui| {
@@ -1256,6 +1297,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         contrast: tc.contrast,
                         saturation: tc.saturation,
                         speed: tc.speed,
+                        reverse: tc.reverse,
+                        freeze: tc.freeze,
                         opacity: tc.opacity,
                         blend_mode: tc.blend_mode,
                         position_x: tc.position_x,
@@ -1746,6 +1789,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 gamma_b: tc.gamma_b,
                 lut_path: tc.lut_path.clone(),
                 speed: tc.speed,
+                freeze: tc.freeze,
                 opacity: tc.opacity,
                 blend_mode: tc.blend_mode,
                 position_x: tc.position_x,
@@ -1844,6 +1888,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                             gamma_b: tc.gamma_b,
                             lut_path: tc.lut_path.clone(),
                             speed: tc.speed,
+                            freeze: tc.freeze,
                             opacity: tc.opacity,
                             blend_mode: tc.blend_mode,
                             position_x: tc.position_x,
@@ -1968,7 +2013,9 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     (Some(i), None) => c.info.duration().saturating_sub(i),
                     _ => c.info.duration(),
                 };
-                tc.start_on_track.as_secs_f32() + src_dur.as_secs_f32() / tc.speed
+                tc.start_on_track.as_secs_f32()
+                    + src_dur.as_secs_f32() / tc.speed
+                    + freeze_extra_secs(tc.freeze)
             })
         })
         .fold(0.0f32, f32::max);
@@ -3342,7 +3389,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                     }
                                     _ => s.info.duration().as_secs_f32(),
                                 };
-                                src_dur / tc.speed
+                                src_dur / tc.speed + freeze_extra_secs(tc.freeze)
                             })
                         })
                         .unwrap_or(1.0);
@@ -3770,6 +3817,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 gamma_b: tc.gamma_b,
                 lut_path: tc.lut_path.clone(),
                 speed: tc.speed,
+                freeze: tc.freeze,
                 opacity: tc.opacity,
                 blend_mode: tc.blend_mode,
                 position_x: tc.position_x,
@@ -3881,6 +3929,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             contrast: 1.0,
             saturation: 1.0,
             speed: 1.0,
+            reverse: false,
+            freeze: None,
             opacity: 1.0,
             blend_mode: avio::BlendMode::Normal,
             position_x: 0.0,
@@ -4031,6 +4081,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 contrast: state.timeline.tracks[ti].clips[ci].contrast,
                 saturation: state.timeline.tracks[ti].clips[ci].saturation,
                 speed: state.timeline.tracks[ti].clips[ci].speed,
+                reverse: state.timeline.tracks[ti].clips[ci].reverse,
+                freeze: None,
                 opacity: state.timeline.tracks[ti].clips[ci].opacity,
                 blend_mode: state.timeline.tracks[ti].clips[ci].blend_mode,
                 position_x: state.timeline.tracks[ti].clips[ci].position_x,

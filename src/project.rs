@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::state::{
-    AppState, ExportFilterDraft, HAlign, ImportedClip, TimelineClip, TitleClip, Track, TrackKind,
-    VAlign,
+    AppState, ExportFilterDraft, Freeze, HAlign, ImportedClip, TimelineClip, TitleClip, Track,
+    TrackKind, VAlign,
 };
 
 // ── Serializable project structs ─────────────────────────────────────────────
@@ -51,6 +51,10 @@ pub struct ProjectTimelineClip {
     pub contrast: f32,
     pub saturation: f32,
     pub speed: f32,
+    #[serde(default)]
+    pub reverse: bool,
+    #[serde(default)]
+    pub freeze: Option<Freeze>,
     pub opacity: f32,
     pub blend_mode: String,
     #[serde(default)]
@@ -247,6 +251,8 @@ fn timeline_clip_to_project(tc: &TimelineClip, clips: &[ImportedClip]) -> Projec
         contrast: tc.contrast,
         saturation: tc.saturation,
         speed: tc.speed,
+        reverse: tc.reverse,
+        freeze: tc.freeze,
         opacity: tc.opacity,
         blend_mode: blend_mode_to_str(tc.blend_mode).to_string(),
         position_x: tc.position_x,
@@ -303,6 +309,8 @@ fn project_to_timeline_clip(
         contrast: ptc.contrast,
         saturation: ptc.saturation,
         speed: ptc.speed,
+        reverse: ptc.reverse,
+        freeze: ptc.freeze,
         opacity: ptc.opacity,
         blend_mode: blend_mode_from_str(&ptc.blend_mode),
         position_x: ptc.position_x,
