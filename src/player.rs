@@ -458,7 +458,13 @@ pub fn spawn_timeline_player(
             c = crate::export::apply_keying(c, &tc.keying);
             // Geometric transform (crop → flip → rotate) applied before the grade,
             // matching export so the monitor reflects the rendered geometry.
-            c = crate::export::apply_transform(c, &tc.transform, tc.width, tc.height);
+            c = crate::export::apply_transform(
+                c,
+                &tc.transform,
+                tc.width,
+                tc.height,
+                tc.animation.rotation.is_active(),
+            );
             // Full colour grade (Eq → WB → Hue → Gamma → ThreeWayCC → Curves → LUT → Vignette), shared with export.
             // The preview player applies these via avio's RealtimeComposer, so the
             // monitor matches the rendered output without any host-side re-grading.
