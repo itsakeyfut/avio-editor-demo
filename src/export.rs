@@ -836,6 +836,11 @@ pub fn apply_animation(
             }
         }
     }
+    // Audio volume envelope (dB), offset to timeline-global. Overrides the static
+    // gain when active (mirrors the video track-over-static precedence). avio #1316.
+    if anim.volume.is_active() {
+        clip = clip.with_volume_track(keytrack_to_avio(&anim.volume, start_on_track, None));
+    }
     clip
 }
 
@@ -858,7 +863,8 @@ fn clips_to_avio(clips: Vec<ExportClip>, canvas: Option<(u32, u32)>) -> Vec<avio
             } else {
                 clip
             };
-            let clip = if c.gain_db != 0.0 {
+            // A volume envelope (animation.volume) overrides the static gain.
+            let clip = if c.gain_db != 0.0 && !c.animation.volume.is_active() {
                 clip.volume(c.gain_db as f64)
             } else {
                 clip
@@ -2381,5 +2387,41 @@ mod tests {
         assert!((w.value_at(Duration::from_secs(1)) - 1000.0).abs() < 1e-6);
         assert!((w.value_at(Duration::from_secs(3)) - 500.0).abs() < 1e-6);
         assert!((h.value_at(Duration::from_secs(1)) - 500.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn animation_volume_track_maps_to_volume_track() {
+        use super::apply_animation;
+        use crate::state::{ClipAnimation, KeyEasing};
+        use std::time::Duration;
+
+        // No volume keys → no volume_track (the static gain path stays in effect).
+        let none = apply_animation(
+            avio::Clip::new("t.mp4"),
+            &ClipAnimation::default(),
+            Duration::ZERO,
+            (0.0, 0.0),
+            100.0,
+            (1920, 1080),
+        );
+        assert!(none.volume_track.is_none());
+
+        // Volume envelope 0 → -12 dB over 2s, clip placed at 1s on the track.
+        let mut a = ClipAnimation::default();
+        a.volume.insert(0.0, 0.0, KeyEasing::Linear);
+        a.volume.insert(2.0, -12.0, KeyEasing::Linear);
+        let clip = apply_animation(
+            avio::Clip::new("t.mp4"),
+            &a,
+            Duration::from_secs(1),
+            (0.0, 0.0),
+            100.0,
+            (1920, 1080),
+        );
+        let track = clip.volume_track.expect("volume track present");
+        // Clip-local 0 → global 1s → 0 dB; local 2s → global 3s → -12 dB; mid 2s → -6 dB.
+        assert!((track.value_at(Duration::from_secs(1)) - 0.0).abs() < 1e-6);
+        assert!((track.value_at(Duration::from_secs(2)) - (-6.0)).abs() < 1e-6);
+        assert!((track.value_at(Duration::from_secs(3)) - (-12.0)).abs() < 1e-6);
     }
 }

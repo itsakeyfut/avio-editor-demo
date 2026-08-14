@@ -1228,6 +1228,9 @@ pub struct ClipAnimation {
     /// Rotation track (degrees). Reserved (avio #1296).
     #[serde(default)]
     pub rotation: KeyTrack,
+    /// Audio volume track (dB). avio #1316 (`Clip::with_volume_track`).
+    #[serde(default)]
+    pub volume: KeyTrack,
 }
 
 impl ClipAnimation {
@@ -1238,6 +1241,7 @@ impl ClipAnimation {
             || self.pos_y.is_active()
             || self.scale.is_active()
             || self.rotation.is_active()
+            || self.volume.is_active()
     }
 
     /// Active `(label, track)` pairs, for timeline visualization and tooltips.
@@ -1248,6 +1252,7 @@ impl ClipAnimation {
             ("Position Y", &self.pos_y),
             ("Scale", &self.scale),
             ("Rotation", &self.rotation),
+            ("Volume", &self.volume),
         ]
         .into_iter()
         .filter(|(_, t)| t.is_active())
