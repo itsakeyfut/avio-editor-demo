@@ -441,7 +441,8 @@ pub fn spawn_timeline_player(
             if tc.speed != 1.0 {
                 c = c.with_speed(tc.speed as f64);
             }
-            if tc.gain_db != 0.0 {
+            // A volume envelope (animation.volume) overrides the static gain.
+            if tc.gain_db != 0.0 && !tc.animation.volume.is_active() {
                 c = c.volume(tc.gain_db as f64);
             }
             if tc.fade_in > Duration::ZERO {

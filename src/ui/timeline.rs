@@ -284,6 +284,14 @@ pub fn show_inspector(state: &mut state::AppState, ui: &mut egui::Ui) {
         // Captured before the mutable clip borrow below; used to place opacity
         // keyframes at the current playhead (converted to clip-local time).
         let playhead_secs = state.timeline_playhead_secs;
+        // Whether this clip's source carries audio — gates the Volume envelope panel.
+        let has_audio = state
+            .timeline
+            .tracks
+            .get(ti)
+            .and_then(|t| t.clips.get(ci))
+            .and_then(|c| state.clips.get(c.source_index))
+            .is_some_and(|s| s.info.primary_audio().is_some());
         if let Some(clip) = state
             .timeline
             .tracks
@@ -449,6 +457,21 @@ pub fn show_inspector(state: &mut state::AppState, ui: &mut egui::Ui) {
                             &mut clip.animation.scale,
                             clip_local,
                             "%",
+                        );
+                    }
+                    // ── Volume envelope (dB) — any audio-bearing clip. Overrides the
+                    // static per-clip gain when keyed. avio #1316. ──
+                    if has_audio {
+                        let clip_local =
+                            (playhead_secs - clip.start_on_track.as_secs_f64()).max(0.0);
+                        position_keyframe_panel(
+                            ui,
+                            "clip_volume_keys",
+                            "Volume Keyframes",
+                            &mut clip.gain_db,
+                            &mut clip.animation.volume,
+                            clip_local,
+                            "dB",
                         );
                     }
                     // Blend mode is only meaningful for overlay (V2+) clips.
