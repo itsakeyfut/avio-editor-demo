@@ -32,6 +32,10 @@ pub struct ExportClip {
     pub saturation: f32,
     /// Per-clip speed multiplier. `1.0` = normal. Applied by trimming `out_point` (avio gap — docs/issue41.md).
     pub speed: f32,
+    /// Reverse playback (video + audio), export-only. avio `Reverse` / `AReverse`. #143.
+    pub reverse: bool,
+    /// Freeze-frame spec (hold + extend clip length). avio `FreezeFrame`. #143.
+    pub freeze: Option<crate::state::Freeze>,
     /// Per-clip opacity (`1.0` = fully opaque). Forwarded to `Clip::with_opacity`.
     pub opacity: f32,
     /// Per-clip blend mode. Forwarded to `Clip::with_blend_mode`.
@@ -844,6 +848,29 @@ pub fn apply_animation(
     clip
 }
 
+/// Reverse the whole clip (video + audio). Export-only — avio buffers the clip, which
+/// does not fit the streaming realtime preview (see demo #178). #143.
+pub fn apply_reverse(clip: avio::Clip, reverse: bool) -> avio::Clip {
+    if reverse {
+        clip.with_video_effect(avio::FilterStep::Reverse)
+            .with_audio_effect(avio::FilterStep::AReverse)
+    } else {
+        clip
+    }
+}
+
+/// Hold the frame at `at_secs` for `hold_secs`, extending the clip length. Applied in
+/// both preview and export so the clip lengths match. #143.
+pub fn apply_freeze(clip: avio::Clip, freeze: Option<crate::state::Freeze>) -> avio::Clip {
+    match freeze {
+        Some(f) => clip.with_video_effect(avio::FilterStep::FreezeFrame {
+            pts: f.at_secs,
+            duration: f.hold_secs,
+        }),
+        None => clip,
+    }
+}
+
 fn clips_to_avio(clips: Vec<ExportClip>, canvas: Option<(u32, u32)>) -> Vec<avio::Clip> {
     clips
         .into_iter()
@@ -883,6 +910,10 @@ fn clips_to_avio(clips: Vec<ExportClip>, canvas: Option<(u32, u32)>) -> Vec<avio
                 Some(kind) => clip.with_transition(kind, c.transition_duration),
                 None => clip,
             };
+            // Reverse (export only) + freeze frame. Reverse plays forward in the preview
+            // (#178); freeze is applied in both so clip lengths match.
+            let clip = apply_reverse(clip, c.reverse);
+            let clip = apply_freeze(clip, c.freeze);
             // Chroma key first — key the original colours before any transform /
             // grade / scale, producing alpha the composer reveals through. Shared
             // with preview. No-op when disabled.
@@ -2423,5 +2454,43 @@ mod tests {
         assert!((track.value_at(Duration::from_secs(1)) - 0.0).abs() < 1e-6);
         assert!((track.value_at(Duration::from_secs(2)) - (-6.0)).abs() < 1e-6);
         assert!((track.value_at(Duration::from_secs(3)) - (-12.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn reverse_and_freeze_map_to_filter_steps() {
+        use super::{apply_freeze, apply_reverse};
+        use crate::state::Freeze;
+
+        // Off / none → no effects added.
+        let plain = apply_freeze(apply_reverse(avio::Clip::new("t.mp4"), false), None);
+        assert!(plain.video_effect_chain().is_empty());
+        assert!(plain.audio_effects.is_empty());
+
+        // Reverse on → Reverse (video) + AReverse (audio).
+        let rev = apply_reverse(avio::Clip::new("t.mp4"), true);
+        assert!(
+            rev.video_effect_chain()
+                .iter()
+                .any(|s| matches!(s, avio::FilterStep::Reverse))
+        );
+        assert!(
+            rev.audio_effects
+                .iter()
+                .any(|s| matches!(s, avio::FilterStep::AReverse))
+        );
+
+        // Freeze → FreezeFrame with the given pts/duration.
+        let frz = apply_freeze(
+            avio::Clip::new("t.mp4"),
+            Some(Freeze {
+                at_secs: 1.5,
+                hold_secs: 2.0,
+            }),
+        );
+        let step = frz.video_effect_chain().into_iter().find_map(|s| match s {
+            avio::FilterStep::FreezeFrame { pts, duration } => Some((pts, duration)),
+            _ => None,
+        });
+        assert_eq!(step, Some((1.5, 2.0)));
     }
 }
