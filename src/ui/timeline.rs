@@ -450,6 +450,17 @@ pub fn show_inspector(state: &mut state::AppState, ui: &mut egui::Ui) {
                             clip_local,
                             "%",
                         );
+                        // Rotation reuses the static `transform.rotation` value; when the
+                        // track is active `apply_transform` skips its static rotate.
+                        position_keyframe_panel(
+                            ui,
+                            "clip_rotation_keys",
+                            "Rotation Keyframes",
+                            &mut clip.transform.rotation,
+                            &mut clip.animation.rotation,
+                            clip_local,
+                            "°",
+                        );
                     }
                     // Blend mode is only meaningful for overlay (V2+) clips.
                     if ti >= 1 {

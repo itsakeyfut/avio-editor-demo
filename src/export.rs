@@ -376,6 +376,7 @@ pub fn apply_transform(
     t: &crate::state::Transform,
     width: u32,
     height: u32,
+    rotation_animated: bool,
 ) -> avio::Clip {
     // Crop: convert edge insets (%) to an even-aligned pixel rectangle, then
     // scale the cropped region back to the source size (see the fn docs).
@@ -427,7 +428,9 @@ pub fn apply_transform(
     } else {
         clip
     };
-    if t.rotation != 0.0 {
+    // Static rotation. Skipped when the rotation is keyframed — `apply_animation`
+    // then drives it via `RotateAnimated` (avoids applying rotation twice).
+    if !rotation_animated && t.rotation != 0.0 {
         clip.with_video_effect(avio::FilterStep::Rotate {
             angle_degrees: t.rotation as f64,
             fill_color: "black".to_string(),
@@ -836,6 +839,21 @@ pub fn apply_animation(
             }
         }
     }
+    // Rotation (degrees) as a self-animating `rotate` effect. Only the keyframed case
+    // is handled here; a static rotation is applied by `apply_transform` (which skips
+    // its rotate when this track is active, so rotation is never applied twice).
+    if anim.rotation.is_active() {
+        clip = clip.with_video_effect(avio::FilterStep::RotateAnimated {
+            angle: avio::AnimatedValue::Track(keytrack_to_avio(
+                &anim.rotation,
+                start_on_track,
+                None,
+            )),
+            // Transparent corners so the layers below (V1) show through the rotated PiP
+            // instead of black. avio converts to rgba + uses overlay `:format=auto`.
+            fill_color: "none".to_string(),
+        });
+    }
     clip
 }
 
@@ -883,7 +901,13 @@ fn clips_to_avio(clips: Vec<ExportClip>, canvas: Option<(u32, u32)>) -> Vec<avio
             let clip = apply_keying(clip, &c.keying);
             // Geometric transform (crop → flip → rotate) applied before the grade
             // so grading/effects act on the transformed image. Shared with preview.
-            let clip = apply_transform(clip, &c.transform, c.width, c.height);
+            let clip = apply_transform(
+                clip,
+                &c.transform,
+                c.width,
+                c.height,
+                c.animation.rotation.is_active(),
+            );
             // Colour grading chain (Eq → WB → Hue → Gamma → ThreeWayCC → Curves → LUT → Vignette). Built from the
             // shared `apply_color_grade` so export and the preview
             // (`Clip::apply_video_effects`) apply the identical chain.
@@ -1649,8 +1673,8 @@ mod tests {
         use super::apply_transform;
 
         let t = crate::state::Transform::default();
-        let steps =
-            apply_transform(avio::Clip::new("test.mp4"), &t, 1920, 1080).video_effect_chain();
+        let steps = apply_transform(avio::Clip::new("test.mp4"), &t, 1920, 1080, false)
+            .video_effect_chain();
         assert!(steps.is_empty());
     }
 
@@ -1666,8 +1690,8 @@ mod tests {
             crop_bottom: 25.0, // 270 px
             ..Default::default()
         };
-        let steps =
-            apply_transform(avio::Clip::new("test.mp4"), &t, 1920, 1080).video_effect_chain();
+        let steps = apply_transform(avio::Clip::new("test.mp4"), &t, 1920, 1080, false)
+            .video_effect_chain();
         // Crop is followed by a Scale back to the source size (crop & zoom to fill).
         assert_eq!(steps.len(), 2);
         match &steps[0] {
@@ -1712,7 +1736,8 @@ mod tests {
         };
         // On a tiny 8×8 source the insets round to 4 px per side, leaving a
         // 0 px residual (< 2), forcing the skip path.
-        let steps = apply_transform(avio::Clip::new("test.mp4"), &t, 8, 8).video_effect_chain();
+        let steps =
+            apply_transform(avio::Clip::new("test.mp4"), &t, 8, 8, false).video_effect_chain();
         assert!(steps.is_empty());
     }
 
@@ -1727,8 +1752,8 @@ mod tests {
             flip_v: true,
             ..Default::default()
         };
-        let steps =
-            apply_transform(avio::Clip::new("test.mp4"), &t, 1920, 1080).video_effect_chain();
+        let steps = apply_transform(avio::Clip::new("test.mp4"), &t, 1920, 1080, false)
+            .video_effect_chain();
         assert_eq!(steps.len(), 3);
         assert!(matches!(steps[0], avio::FilterStep::HFlip));
         assert!(matches!(steps[1], avio::FilterStep::VFlip));
@@ -2381,5 +2406,53 @@ mod tests {
         assert!((w.value_at(Duration::from_secs(1)) - 1000.0).abs() < 1e-6);
         assert!((w.value_at(Duration::from_secs(3)) - 500.0).abs() < 1e-6);
         assert!((h.value_at(Duration::from_secs(1)) - 500.0).abs() < 1e-6);
+    }
+
+    /// A rotation track → a `RotateAnimated` effect (degrees, offset to global time);
+    /// an empty rotation track adds no rotate effect.
+    #[test]
+    fn animation_rotation_track_maps_to_rotate_animated() {
+        use super::apply_animation;
+        use crate::state::{ClipAnimation, KeyEasing};
+        use std::time::Duration;
+
+        let mut a = ClipAnimation::default();
+        a.rotation.insert(0.0, 0.0, KeyEasing::Linear);
+        a.rotation.insert(2.0, 90.0, KeyEasing::Linear);
+        // Clip placed at 1s: keys land at global 1s (0°) and 3s (90°).
+        let clip = apply_animation(
+            avio::Clip::new("t.mp4"),
+            &a,
+            Duration::from_secs(1),
+            (0.0, 0.0),
+            100.0,
+            (0, 0),
+        );
+        let angle = clip
+            .video_effect_chain()
+            .into_iter()
+            .find_map(|s| match s {
+                avio::FilterStep::RotateAnimated { angle, .. } => Some(angle),
+                _ => None,
+            })
+            .expect("RotateAnimated present");
+        assert!((angle.value_at(Duration::from_secs(1)).abs()) < 1e-6);
+        assert!((angle.value_at(Duration::from_secs(3)) - 90.0).abs() < 1e-6);
+
+        // No rotation track → no RotateAnimated effect.
+        let none = apply_animation(
+            avio::Clip::new("t.mp4"),
+            &ClipAnimation::default(),
+            Duration::ZERO,
+            (0.0, 0.0),
+            100.0,
+            (0, 0),
+        );
+        assert!(
+            !none
+                .video_effect_chain()
+                .iter()
+                .any(|s| matches!(s, avio::FilterStep::RotateAnimated { .. }))
+        );
     }
 }
