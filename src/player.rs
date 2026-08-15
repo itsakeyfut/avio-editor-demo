@@ -43,6 +43,8 @@ pub struct TrackClipData {
     pub speed: f32,
     /// Freeze-frame spec, applied in preview + export so clip lengths match. #143.
     pub freeze: Option<crate::state::Freeze>,
+    /// Optional linear speed ramp (video only; audio muted). #177.
+    pub speed_ramp: Option<crate::state::SpeedRamp>,
     /// Per-clip opacity (`1.0` = fully opaque). Forwarded to `Clip::with_opacity`.
     pub opacity: f32,
     /// Per-clip blend mode. Forwarded to `Clip::with_blend_mode`.
@@ -459,6 +461,9 @@ pub fn spawn_timeline_player(
             // Freeze frame — applied in preview too so the clip length matches export.
             // (Reverse is export-only; the preview plays forward.) #143.
             c = crate::export::apply_freeze(c, tc.freeze);
+            // Speed ramp — preview plays at the average (log-mean) speed with audio muted;
+            // the ramp itself (SpeedRampVideo) is export-only. #177.
+            c = crate::export::apply_speed_ramp(c, tc.speed_ramp, 0.0, false);
             // Chroma key first — key original colours before transform/grade,
             // producing alpha the composer reveals through. Matches export.
             c = crate::export::apply_keying(c, &tc.keying);

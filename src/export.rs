@@ -36,6 +36,10 @@ pub struct ExportClip {
     pub reverse: bool,
     /// Freeze-frame spec (hold + extend clip length). avio `FreezeFrame`. #143.
     pub freeze: Option<crate::state::Freeze>,
+    /// Optional linear speed ramp (video only; audio muted; export-only). #177.
+    pub speed_ramp: Option<crate::state::SpeedRamp>,
+    /// Source playable duration (seconds) — the span the speed ramp covers. #177.
+    pub src_dur_secs: f64,
     /// Per-clip opacity (`1.0` = fully opaque). Forwarded to `Clip::with_opacity`.
     pub opacity: f32,
     /// Per-clip blend mode. Forwarded to `Clip::with_blend_mode`.
@@ -871,6 +875,41 @@ pub fn apply_freeze(clip: avio::Clip, freeze: Option<crate::state::Freeze>) -> a
     }
 }
 
+/// Log-mean of two positive speed factors — the constant speed whose duration equals the
+/// linear ramp's integral `∫ 1/s dt`, so avio's scalar `clip_dur` stays correct. #177.
+pub fn log_mean(a: f64, b: f64) -> f64 {
+    if (a - b).abs() < 1e-9 {
+        a
+    } else {
+        (b - a) / (b / a).ln()
+    }
+}
+
+/// Apply a linear video speed ramp. Sets the scalar speed to the log-mean (for correct
+/// duration) and mutes audio. On **export** also attaches the `SpeedRampVideo` `setpts`
+/// effect; the preview omits it and plays at the average (log-mean) speed. #177.
+pub fn apply_speed_ramp(
+    clip: avio::Clip,
+    ramp: Option<crate::state::SpeedRamp>,
+    src_dur_secs: f64,
+    is_export: bool,
+) -> avio::Clip {
+    let Some(r) = ramp else { return clip };
+    let a = f64::from(r.start_pct) / 100.0;
+    let b = f64::from(r.end_pct) / 100.0;
+    // Log-mean scalar speed (correct output duration) + mute audio.
+    let clip = clip.with_speed(log_mean(a, b)).volume(-120.0);
+    if is_export {
+        clip.with_video_effect(avio::FilterStep::SpeedRampVideo {
+            start_factor: a,
+            end_factor: b,
+            clip_dur_secs: src_dur_secs,
+        })
+    } else {
+        clip
+    }
+}
+
 fn clips_to_avio(clips: Vec<ExportClip>, canvas: Option<(u32, u32)>) -> Vec<avio::Clip> {
     clips
         .into_iter()
@@ -914,6 +953,9 @@ fn clips_to_avio(clips: Vec<ExportClip>, canvas: Option<(u32, u32)>) -> Vec<avio
             // (#178); freeze is applied in both so clip lengths match.
             let clip = apply_reverse(clip, c.reverse);
             let clip = apply_freeze(clip, c.freeze);
+            // Linear speed ramp (video only): overrides the static speed, mutes audio, and
+            // (export) attaches the SpeedRampVideo setpts. #177.
+            let clip = apply_speed_ramp(clip, c.speed_ramp, c.src_dur_secs, true);
             // Chroma key first — key the original colours before any transform /
             // grade / scale, producing alpha the composer reveals through. Shared
             // with preview. No-op when disabled.
@@ -2492,5 +2534,128 @@ mod tests {
             _ => None,
         });
         assert_eq!(step, Some((1.5, 2.0)));
+    }
+
+    #[test]
+    fn speed_ramp_maps_to_setpts_and_mutes() {
+        use super::{apply_speed_ramp, log_mean};
+        use crate::state::SpeedRamp;
+
+        // None → unchanged.
+        let plain = apply_speed_ramp(avio::Clip::new("t.mp4"), None, 4.0, true);
+        assert!(plain.video_effect_chain().is_empty());
+
+        let r = Some(SpeedRamp {
+            start_pct: 100.0,
+            end_pct: 400.0,
+        });
+
+        // Export ramp 100%→400% over 4s → SpeedRampVideo + log-mean speed + muted.
+        let ex = apply_speed_ramp(avio::Clip::new("t.mp4"), r, 4.0, true);
+        let step = ex.video_effect_chain().into_iter().find_map(|s| match s {
+            avio::FilterStep::SpeedRampVideo {
+                start_factor,
+                end_factor,
+                clip_dur_secs,
+            } => Some((start_factor, end_factor, clip_dur_secs)),
+            _ => None,
+        });
+        assert_eq!(step, Some((1.0, 4.0, 4.0)));
+        assert!((ex.speed - log_mean(1.0, 4.0)).abs() < 1e-9);
+        assert!(ex.volume_db < -100.0, "audio should be muted");
+
+        // Preview (is_export=false) → log-mean speed + mute, but no SpeedRampVideo.
+        let pv = apply_speed_ramp(avio::Clip::new("t.mp4"), r, 0.0, false);
+        assert!(pv.video_effect_chain().is_empty());
+        assert!((pv.speed - log_mean(1.0, 4.0)).abs() < 1e-9);
+        assert!(pv.volume_db < -100.0);
+    }
+
+    // Builds a defaults-everywhere ExportClip carrying a speed ramp, to verify the FULL
+    // export mapping (`clips_to_avio`) — not just `apply_speed_ramp` in isolation — keeps
+    // the SpeedRampVideo effect (correct clip_dur) and the log-mean speed. #177.
+    #[test]
+    fn clips_to_avio_preserves_speed_ramp() {
+        use crate::state::SpeedRamp;
+        use std::time::Duration;
+
+        let mk = |ramp: Option<SpeedRamp>, speed: f32| super::ExportClip {
+            path: std::path::PathBuf::from("t.mp4"),
+            start_on_track: Duration::ZERO,
+            in_point: Some(Duration::ZERO),
+            out_point: Some(Duration::from_secs(6)),
+            transition: None,
+            transition_duration: Duration::ZERO,
+            source_duration: Duration::from_secs(6),
+            fps: 30.0,
+            has_audio: false,
+            gain_db: 0.0,
+            fade_in: Duration::ZERO,
+            fade_out: Duration::ZERO,
+            brightness: 0.0,
+            contrast: 1.0,
+            saturation: 1.0,
+            speed,
+            reverse: false,
+            freeze: None,
+            speed_ramp: ramp,
+            src_dur_secs: 6.0,
+            opacity: 1.0,
+            blend_mode: avio::BlendMode::Normal,
+            position_x: 0.0,
+            position_y: 0.0,
+            scale_pct: 100.0,
+            proxy_path: None,
+            lut_path: None,
+            wb_temperature: crate::state::WB_NEUTRAL_TEMP,
+            wb_tint: 0.0,
+            hue_degrees: 0.0,
+            gamma_r: 1.0,
+            gamma_g: 1.0,
+            gamma_b: 1.0,
+            vignette: 0.0,
+            vignette_x: 50.0,
+            vignette_y: 50.0,
+            width: 640,
+            height: 360,
+            curves: Default::default(),
+            wheels: Default::default(),
+            video_effects: Default::default(),
+            transform: Default::default(),
+            overlay: Default::default(),
+            subtitle: Default::default(),
+            keying: Default::default(),
+            mask: Default::default(),
+            animation: Default::default(),
+        };
+
+        let ramp = mk(
+            Some(SpeedRamp {
+                start_pct: 100.0,
+                end_pct: 800.0,
+            }),
+            1.0,
+        );
+        let out = super::clips_to_avio(vec![ramp], None);
+        let clip = &out[0];
+        let step = clip.video_effect_chain().into_iter().find_map(|s| match s {
+            avio::FilterStep::SpeedRampVideo {
+                start_factor,
+                end_factor,
+                clip_dur_secs,
+            } => Some((start_factor, end_factor, clip_dur_secs)),
+            _ => None,
+        });
+        assert_eq!(
+            step,
+            Some((1.0, 8.0, 6.0)),
+            "clips_to_avio must keep SpeedRampVideo with the source duration"
+        );
+        assert!(
+            (clip.speed - super::log_mean(1.0, 8.0)).abs() < 1e-9,
+            "scalar speed must be the log-mean, got {}",
+            clip.speed
+        );
+        assert!(clip.volume_db < -100.0, "ramped clip audio must be muted");
     }
 }
