@@ -69,7 +69,8 @@ fn snap_trim_edge(
                 (Some(i), None) => src.info.duration().saturating_sub(i).as_secs_f32(),
                 _ => src.info.duration().as_secs_f32(),
             };
-            let dur = src_dur / clip.speed + freeze_extra_secs(clip.freeze);
+            let dur = src_dur / effective_speed(clip.speed, clip.speed_ramp)
+                + freeze_extra_secs(clip.freeze);
             let c_left = lane_left + clip.start_on_track.as_secs_f32() * pps;
             let c_right = c_left + dur * pps;
 
@@ -117,7 +118,8 @@ fn snap_clip_start(
                             (Some(i), None) => s.info.duration().saturating_sub(i).as_secs_f32(),
                             _ => s.info.duration().as_secs_f32(),
                         };
-                        let dur = src_dur / c.speed + freeze_extra_secs(c.freeze);
+                        let dur = src_dur / effective_speed(c.speed, c.speed_ramp)
+                            + freeze_extra_secs(c.freeze);
                         let cs = c.start_on_track.as_secs_f32();
                         (cs, cs + dur)
                     })
@@ -181,6 +183,23 @@ fn snap_clip_start(
 /// the opacity keyframe panel; a key's easing controls the ramp to the next key, so it
 /// is shown only on keys that have a following segment.
 /// Extra timeline seconds a clip occupies because of a freeze-frame hold. #143.
+/// Effective constant playback speed of a clip: a linear speed ramp's log-mean (so its
+/// timeline length is correct), else the static speed. #177.
+fn effective_speed(speed: f32, ramp: Option<state::SpeedRamp>) -> f32 {
+    match ramp {
+        Some(r) => {
+            let a = r.start_pct / 100.0;
+            let b = r.end_pct / 100.0;
+            if (a - b).abs() < 1e-6 {
+                a
+            } else {
+                (b - a) / (b / a).ln()
+            }
+        }
+        None => speed,
+    }
+}
+
 fn freeze_extra_secs(freeze: Option<state::Freeze>) -> f32 {
     #[allow(clippy::cast_possible_truncation)]
     freeze.map_or(0.0, |f| f.hold_secs as f32)
@@ -359,6 +378,41 @@ pub fn show_inspector(state: &mut state::AppState, ui: &mut egui::Ui) {
                             );
                             f.at_secs = f.at_secs.max(0.0);
                             f.hold_secs = f.hold_secs.max(0.1);
+                        }
+                    });
+                    // Linear speed ramp (video only; audio muted; export-only). #177.
+                    ui.horizontal(|ui| {
+                        let mut ramp_on = clip.speed_ramp.is_some();
+                        if ui
+                            .checkbox(&mut ramp_on, "Speed ramp")
+                            .on_hover_text(
+                                "Linear video speed ramp; audio muted. Applies on export; \
+                                 the preview plays at the average speed.",
+                            )
+                            .changed()
+                        {
+                            clip.speed_ramp = ramp_on.then_some(state::SpeedRamp {
+                                start_pct: clip.speed * 100.0,
+                                end_pct: clip.speed * 100.0,
+                            });
+                        }
+                        if let Some(r) = clip.speed_ramp.as_mut() {
+                            ui.label("start");
+                            ui.add(
+                                egui::DragValue::new(&mut r.start_pct)
+                                    .speed(1.0)
+                                    .suffix(" %")
+                                    .fixed_decimals(0),
+                            );
+                            ui.label("end");
+                            ui.add(
+                                egui::DragValue::new(&mut r.end_pct)
+                                    .speed(1.0)
+                                    .suffix(" %")
+                                    .fixed_decimals(0),
+                            );
+                            r.start_pct = r.start_pct.clamp(10.0, 400.0);
+                            r.end_pct = r.end_pct.clamp(10.0, 400.0);
                         }
                     });
                     ui.horizontal(|ui| {
@@ -1282,6 +1336,16 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     let src = &clips[tc.source_index];
                     export::ExportClip {
                         path: src.path.clone(),
+                        src_dur_secs: {
+                            let full = src.info.duration();
+                            match (tc.in_point, tc.out_point) {
+                                (Some(i), Some(o)) if o > i => o - i,
+                                (None, Some(o)) => o,
+                                (Some(i), None) => full.saturating_sub(i),
+                                _ => full,
+                            }
+                            .as_secs_f64()
+                        },
                         start_on_track: tc.start_on_track,
                         in_point: tc.in_point,
                         out_point: tc.out_point,
@@ -1299,6 +1363,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         speed: tc.speed,
                         reverse: tc.reverse,
                         freeze: tc.freeze,
+                        speed_ramp: tc.speed_ramp,
                         opacity: tc.opacity,
                         blend_mode: tc.blend_mode,
                         position_x: tc.position_x,
@@ -1790,6 +1855,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 lut_path: tc.lut_path.clone(),
                 speed: tc.speed,
                 freeze: tc.freeze,
+                speed_ramp: tc.speed_ramp,
                 opacity: tc.opacity,
                 blend_mode: tc.blend_mode,
                 position_x: tc.position_x,
@@ -1889,6 +1955,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                             lut_path: tc.lut_path.clone(),
                             speed: tc.speed,
                             freeze: tc.freeze,
+                            speed_ramp: tc.speed_ramp,
                             opacity: tc.opacity,
                             blend_mode: tc.blend_mode,
                             position_x: tc.position_x,
@@ -2014,7 +2081,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     _ => c.info.duration(),
                 };
                 tc.start_on_track.as_secs_f32()
-                    + src_dur.as_secs_f32() / tc.speed
+                    + src_dur.as_secs_f32() / effective_speed(tc.speed, tc.speed_ramp)
                     + freeze_extra_secs(tc.freeze)
             })
         })
@@ -2485,7 +2552,9 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                             let fps = source.info.frame_rate().unwrap_or(30.0) as f32;
                             let one_frame_sec = (1.0 / fps).max(0.001_f32);
                             let orig_x = lane_rect.left() + tc.start_on_track.as_secs_f32() * pps;
-                            let orig_w = eff_dur.as_secs_f32() / tc.speed * pps;
+                            let orig_w = eff_dur.as_secs_f32()
+                                / effective_speed(tc.speed, tc.speed_ramp)
+                                * pps;
                             let mut new_speed_pct = tc.speed * 100.0;
 
                             // Live-preview dimensions during an active trim drag
@@ -3389,7 +3458,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                                     }
                                     _ => s.info.duration().as_secs_f32(),
                                 };
-                                src_dur / tc.speed + freeze_extra_secs(tc.freeze)
+                                src_dur / effective_speed(tc.speed, tc.speed_ramp)
+                                    + freeze_extra_secs(tc.freeze)
                             })
                         })
                         .unwrap_or(1.0);
@@ -3818,6 +3888,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 lut_path: tc.lut_path.clone(),
                 speed: tc.speed,
                 freeze: tc.freeze,
+                speed_ramp: tc.speed_ramp,
                 opacity: tc.opacity,
                 blend_mode: tc.blend_mode,
                 position_x: tc.position_x,
@@ -3931,6 +4002,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             speed: 1.0,
             reverse: false,
             freeze: None,
+            speed_ramp: None,
             opacity: 1.0,
             blend_mode: avio::BlendMode::Normal,
             position_x: 0.0,
@@ -4083,6 +4155,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 speed: state.timeline.tracks[ti].clips[ci].speed,
                 reverse: state.timeline.tracks[ti].clips[ci].reverse,
                 freeze: None,
+                speed_ramp: None,
                 opacity: state.timeline.tracks[ti].clips[ci].opacity,
                 blend_mode: state.timeline.tracks[ti].clips[ci].blend_mode,
                 position_x: state.timeline.tracks[ti].clips[ci].position_x,

@@ -654,6 +654,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui, ctx: &egui::Context)
                 speed: 1.0,
                 reverse: false,
                 freeze: None,
+                speed_ramp: None,
                 opacity: 1.0,
                 blend_mode: avio::BlendMode::Normal,
                 position_x: 0.0,

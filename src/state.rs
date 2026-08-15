@@ -1271,6 +1271,17 @@ pub struct Freeze {
     pub hold_secs: f64,
 }
 
+/// Linear speed ramp: playback speed goes from `start_pct` to `end_pct` (% of normal)
+/// across the clip — video only, audio muted, export-only. Maps to avio
+/// `FilterStep::SpeedRampVideo`. #177.
+#[derive(Clone, Copy, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SpeedRamp {
+    /// Speed at the clip start, percent of normal (10–400).
+    pub start_pct: f32,
+    /// Speed at the clip end, percent of normal (10–400).
+    pub end_pct: f32,
+}
+
 #[derive(Clone, PartialEq)]
 pub struct TimelineClip {
     pub source_index: usize,
@@ -1309,6 +1320,8 @@ pub struct TimelineClip {
     pub reverse: bool,
     /// Optional freeze-frame: hold a frame for N seconds, extending the clip length. #143.
     pub freeze: Option<Freeze>,
+    /// Optional linear speed ramp (video only; audio muted; export-only). #177.
+    pub speed_ramp: Option<SpeedRamp>,
     /// Overlay opacity for V2 clips. Range: 0.0 (transparent)..=1.0 (fully opaque). Default: 1.0.
     /// avio gap: `Clip` has no opacity field; `TimelineBuilder` exposes per-track opacity via
     /// animation only — per-clip opacity is not supported (docs/issue43.md).
