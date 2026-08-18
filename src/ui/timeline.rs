@@ -63,12 +63,8 @@ fn snap_trim_edge(
             let Some(src) = clips_info.get(clip.source_index) else {
                 continue;
             };
-            let src_dur = match (clip.in_point, clip.out_point) {
-                (Some(i), Some(o)) if o > i => (o - i).as_secs_f32(),
-                (None, Some(o)) => o.as_secs_f32(),
-                (Some(i), None) => src.info.duration().saturating_sub(i).as_secs_f32(),
-                _ => src.info.duration().as_secs_f32(),
-            };
+            let src_dur = state::eff_source_dur(src.info.duration(), clip.in_point, clip.out_point)
+                .as_secs_f32();
             let dur = src_dur / clip.speed + freeze_extra_secs(clip.freeze);
             let c_left = lane_left + clip.start_on_track.as_secs_f32() * pps;
             let c_right = c_left + dur * pps;
@@ -111,12 +107,9 @@ fn snap_clip_start(
                 .filter(|(ci, _)| !(dst_track == src_track && *ci == src_clip))
                 .filter_map(|(_, c)| {
                     clips_info.get(c.source_index).map(|s| {
-                        let src_dur = match (c.in_point, c.out_point) {
-                            (Some(i), Some(o)) if o > i => (o - i).as_secs_f32(),
-                            (None, Some(o)) => o.as_secs_f32(),
-                            (Some(i), None) => s.info.duration().saturating_sub(i).as_secs_f32(),
-                            _ => s.info.duration().as_secs_f32(),
-                        };
+                        let src_dur =
+                            state::eff_source_dur(s.info.duration(), c.in_point, c.out_point)
+                                .as_secs_f32();
                         let dur = src_dur / c.speed + freeze_extra_secs(c.freeze);
                         let cs = c.start_on_track.as_secs_f32();
                         (cs, cs + dur)
@@ -2007,12 +2000,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
         .flat_map(|t| t.clips.iter())
         .filter_map(|tc| {
             state.clips.get(tc.source_index).map(|c| {
-                let src_dur = match (tc.in_point, tc.out_point) {
-                    (Some(i), Some(o)) if o > i => o - i,
-                    (None, Some(o)) => o,
-                    (Some(i), None) => c.info.duration().saturating_sub(i),
-                    _ => c.info.duration(),
-                };
+                let src_dur = state::eff_source_dur(c.info.duration(), tc.in_point, tc.out_point);
                 tc.start_on_track.as_secs_f32()
                     + src_dur.as_secs_f32() / tc.speed
                     + freeze_extra_secs(tc.freeze)
@@ -2476,12 +2464,11 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     for (clip_i, tc) in track.clips.iter().enumerate() {
                         if let Some(source) = state.clips.get(tc.source_index) {
                             let eff_in = tc.in_point.unwrap_or(Duration::ZERO);
-                            let eff_dur = match (tc.in_point, tc.out_point) {
-                                (Some(i), Some(o)) if o > i => o - i,
-                                (None, Some(o)) => o,
-                                (Some(i), None) => source.info.duration().saturating_sub(i),
-                                _ => source.info.duration(),
-                            };
+                            let eff_dur = state::eff_source_dur(
+                                source.info.duration(),
+                                tc.in_point,
+                                tc.out_point,
+                            );
                             let fps = source.info.frame_rate().unwrap_or(30.0) as f32;
                             let one_frame_sec = (1.0 / fps).max(0.001_f32);
                             let orig_x = lane_rect.left() + tc.start_on_track.as_secs_f32() * pps;
@@ -3381,14 +3368,12 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         .and_then(|t| t.clips.get(drag.src_clip))
                         .and_then(|tc| {
                             state.clips.get(tc.source_index).map(|s| {
-                                let src_dur = match (tc.in_point, tc.out_point) {
-                                    (Some(i), Some(o)) if o > i => (o - i).as_secs_f32(),
-                                    (None, Some(o)) => o.as_secs_f32(),
-                                    (Some(i), None) => {
-                                        s.info.duration().saturating_sub(i).as_secs_f32()
-                                    }
-                                    _ => s.info.duration().as_secs_f32(),
-                                };
+                                let src_dur = state::eff_source_dur(
+                                    s.info.duration(),
+                                    tc.in_point,
+                                    tc.out_point,
+                                )
+                                .as_secs_f32();
                                 src_dur / tc.speed + freeze_extra_secs(tc.freeze)
                             })
                         })
@@ -3662,12 +3647,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             .get(clip.source_index)
             .map(|s| s.info.duration())
             .unwrap_or(Duration::ZERO);
-        let eff_src_dur = match (clip.in_point, clip.out_point) {
-            (Some(i), Some(o)) if o > i => o - i,
-            (None, Some(o)) => o,
-            (Some(i), None) => src_dur.saturating_sub(i),
-            _ => src_dur,
-        };
+        let eff_src_dur = state::eff_source_dur(src_dur, clip.in_point, clip.out_point);
         let eff_dur = eff_src_dur.div_f32(clip.speed);
         let paste_start = clip.start_on_track + eff_dur;
         let mut new_clip = clip;
@@ -3688,12 +3668,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             .get(clip.source_index)
             .map(|s| s.info.duration())
             .unwrap_or(Duration::ZERO);
-        let eff_src_dur = match (clip.in_point, clip.out_point) {
-            (Some(i), Some(o)) if o > i => o - i,
-            (None, Some(o)) => o,
-            (Some(i), None) => src_dur.saturating_sub(i),
-            _ => src_dur,
-        };
+        let eff_src_dur = state::eff_source_dur(src_dur, clip.in_point, clip.out_point);
         let eff_dur = eff_src_dur.div_f32(clip.speed);
         let dup_start = clip.start_on_track + eff_dur;
         let mut new_clip = clip;
@@ -3987,12 +3962,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     .get(deleted.source_index)
                     .map(|s| s.info.duration())
                     .unwrap_or(Duration::ZERO);
-                let eff_src_dur = match (deleted.in_point, deleted.out_point) {
-                    (Some(i), Some(o)) if o > i => o - i,
-                    (None, Some(o)) => o,
-                    (Some(i), None) => src_dur.saturating_sub(i),
-                    _ => src_dur,
-                };
+                let eff_src_dur =
+                    state::eff_source_dur(src_dur, deleted.in_point, deleted.out_point);
                 let eff_dur = eff_src_dur.div_f32(deleted.speed);
                 let gap_start = deleted.start_on_track + eff_dur;
                 for clip in &mut state.timeline.tracks[ti].clips {
@@ -4038,12 +4009,8 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             for (ci, tc) in track.clips.iter().enumerate() {
                 if let Some(source) = state.clips.get(tc.source_index) {
                     let eff_in = tc.in_point.unwrap_or(Duration::ZERO);
-                    let eff_dur = match (tc.in_point, tc.out_point) {
-                        (Some(i), Some(o)) if o > i => o - i,
-                        (None, Some(o)) => o,
-                        (Some(i), None) => source.info.duration().saturating_sub(i),
-                        _ => source.info.duration(),
-                    };
+                    let eff_dur =
+                        state::eff_source_dur(source.info.duration(), tc.in_point, tc.out_point);
                     let clip_end = tc.start_on_track + eff_dur;
                     if playhead > tc.start_on_track && playhead < clip_end {
                         let offset = playhead.saturating_sub(tc.start_on_track);

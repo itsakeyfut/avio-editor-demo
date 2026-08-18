@@ -7,6 +7,22 @@ use std::time::Duration;
 /// white-balance filter is treated as "off" and skipped, so output is unchanged.
 pub const WB_NEUTRAL_TEMP: u32 = 6500;
 
+/// Effective source duration a clip consumes, from its in/out trim points and the
+/// full source length. The shared basis for the timeline occupancy math (clip
+/// width = `eff_source_dur / speed [+ freeze hold]`).
+pub fn eff_source_dur(
+    source_dur: Duration,
+    in_point: Option<Duration>,
+    out_point: Option<Duration>,
+) -> Duration {
+    match (in_point, out_point) {
+        (Some(i), Some(o)) if o > i => o - i,
+        (None, Some(o)) => o,
+        (Some(i), None) => source_dur.saturating_sub(i),
+        _ => source_dur,
+    }
+}
+
 /// Which edge of a clip is being trimmed.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TrimEdge {
