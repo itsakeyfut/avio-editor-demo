@@ -162,6 +162,50 @@ impl ClipParams {
         }
     }
 
+    /// Builds params from a [`TrackClipData`](crate::player::TrackClipData)
+    /// preview snapshot. `reverse` is `false` — reverse is export-only and the
+    /// preview projection passes `is_export = false` to [`regenerate`], which
+    /// gates it out regardless.
+    pub fn from_track_clip_data(c: &crate::player::TrackClipData) -> Self {
+        Self {
+            speed: c.speed,
+            gain_db: c.gain_db,
+            fade_in_secs: c.fade_in.as_secs_f64(),
+            fade_out_secs: c.fade_out.as_secs_f64(),
+            transition: c.transition.map(|t| t.as_str().to_string()),
+            transition_duration_secs: c.transition_duration.as_secs_f64(),
+            opacity: c.opacity,
+            blend_mode: crate::project::blend_mode_to_str(c.blend_mode).to_string(),
+            position_x: c.position_x,
+            position_y: c.position_y,
+            scale_pct: c.scale_pct,
+            reverse: false,
+            freeze: c.freeze,
+            lut_path: c.lut_path.clone(),
+            brightness: c.brightness,
+            contrast: c.contrast,
+            saturation: c.saturation,
+            wb_temperature: c.wb_temperature,
+            wb_tint: c.wb_tint,
+            hue_degrees: c.hue_degrees,
+            gamma_r: c.gamma_r,
+            gamma_g: c.gamma_g,
+            gamma_b: c.gamma_b,
+            vignette: c.vignette,
+            vignette_x: c.vignette_x,
+            vignette_y: c.vignette_y,
+            curves: c.curves.clone(),
+            wheels: c.wheels,
+            video_effects: c.video_effects,
+            transform: c.transform,
+            overlay: c.overlay.clone(),
+            subtitle: c.subtitle.clone(),
+            keying: c.keying,
+            mask: c.mask.clone(),
+            animation: c.animation.clone(),
+        }
+    }
+
     /// Serializes to `{PARAMS_KEY: <json>}`. The caller merges this into the
     /// clip's existing metadata (preserving [`DEMO_ID_KEY`]).
     pub fn to_metadata(&self) -> HashMap<String, String> {
