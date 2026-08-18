@@ -871,7 +871,7 @@ pub fn apply_freeze(clip: avio::Clip, freeze: Option<crate::state::Freeze>) -> a
     }
 }
 
-fn clips_to_avio(clips: Vec<ExportClip>, canvas: Option<(u32, u32)>) -> Vec<avio::Clip> {
+pub(crate) fn clips_to_avio(clips: Vec<ExportClip>, canvas: Option<(u32, u32)>) -> Vec<avio::Clip> {
     clips
         .into_iter()
         .map(|c| {
