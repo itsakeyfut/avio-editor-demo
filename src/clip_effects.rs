@@ -162,11 +162,9 @@ impl ClipParams {
         }
     }
 
-    /// Builds params from a [`TrackClipData`](crate::player::TrackClipData)
-    /// preview snapshot. `reverse` is `false` — reverse is export-only and the
-    /// preview projection passes `is_export = false` to [`regenerate`], which
-    /// gates it out regardless.
-    pub fn from_track_clip_data(c: &crate::player::TrackClipData) -> Self {
+    /// Builds params from a [`TimelineClip`](crate::state::TimelineClip) — the
+    /// demo's live authoring model — for projection into the avio document.
+    pub fn from_timeline_clip(c: &crate::state::TimelineClip) -> Self {
         Self {
             speed: c.speed,
             gain_db: c.gain_db,
@@ -179,7 +177,7 @@ impl ClipParams {
             position_x: c.position_x,
             position_y: c.position_y,
             scale_pct: c.scale_pct,
-            reverse: false,
+            reverse: c.reverse,
             freeze: c.freeze,
             lut_path: c.lut_path.clone(),
             brightness: c.brightness,

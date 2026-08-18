@@ -18,7 +18,7 @@ fn blend_mode_label(mode: avio::BlendMode) -> &'static str {
 ///
 /// Solo takes priority: if any track is soloed, only soloed tracks are active.
 /// Otherwise, a track is active unless it is muted.
-fn track_is_active(tracks: &[state::Track], idx: usize) -> bool {
+pub(crate) fn track_is_active(tracks: &[state::Track], idx: usize) -> bool {
     let any_solo = tracks.iter().any(|t| t.soloed);
     if any_solo {
         tracks[idx].soloed
@@ -1760,90 +1760,26 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             state.stop_timeline_player();
             state.monitor_clip_index = None;
 
-            let clips = &state.clips;
-            let make_tcd = |tc: &state::TimelineClip| player::TrackClipData {
-                path: clips[tc.source_index].path.clone(),
-                start_on_track: tc.start_on_track,
-                in_point: tc.in_point,
-                out_point: tc.out_point,
-                transition: tc.transition,
-                transition_duration: tc.transition_duration,
-                gain_db: tc.gain_db,
-                fade_in: tc.fade_in,
-                fade_out: tc.fade_out,
-                brightness: tc.brightness,
-                contrast: tc.contrast,
-                saturation: tc.saturation,
-                wb_temperature: tc.wb_temperature,
-                wb_tint: tc.wb_tint,
-                hue_degrees: tc.hue_degrees,
-                gamma_r: tc.gamma_r,
-                gamma_g: tc.gamma_g,
-                gamma_b: tc.gamma_b,
-                lut_path: tc.lut_path.clone(),
-                speed: tc.speed,
-                freeze: tc.freeze,
-                opacity: tc.opacity,
-                blend_mode: tc.blend_mode,
-                position_x: tc.position_x,
-                position_y: tc.position_y,
-                scale_pct: tc.scale_pct,
-                vignette: tc.vignette,
-                vignette_x: tc.vignette_x,
-                vignette_y: tc.vignette_y,
-                width: clips[tc.source_index]
-                    .info
-                    .primary_video()
-                    .map(|v| v.width())
-                    .unwrap_or(0),
-                height: clips[tc.source_index]
-                    .info
-                    .primary_video()
-                    .map(|v| v.height())
-                    .unwrap_or(0),
-                curves: tc.curves.clone(),
-                wheels: tc.wheels,
-                video_effects: tc.video_effects,
-                transform: tc.transform,
-                overlay: tc.overlay.clone(),
-                subtitle: tc.subtitle.clone(),
-                keying: tc.keying,
-                mask: tc.mask.clone(),
-                animation: tc.animation.clone(),
-            };
-            let tracks = &state.timeline.tracks;
-            let audio_start = state.timeline.audio_track_start();
-            let video_tracks: Vec<Vec<_>> = (0..audio_start)
-                .map(|ti| {
-                    if track_is_active(tracks, ti) {
-                        tracks[ti].clips.iter().map(make_tcd).collect()
-                    } else {
-                        vec![]
-                    }
-                })
-                .collect();
-            let a1: Vec<_> = if audio_start < tracks.len() && track_is_active(tracks, audio_start) {
-                tracks[audio_start].clips.iter().map(make_tcd).collect()
-            } else {
-                vec![]
-            };
-
             let start = Duration::from_secs_f64(state.timeline_playhead_secs.max(0.0));
             // Timeline always plays at 1×; reset cpal_rate to 1.0
             state
                 .cpal_rate
                 .store(1.0f64.to_bits(), std::sync::atomic::Ordering::Relaxed);
-            let (thread, handle_rx) = player::spawn_timeline_player(
-                video_tracks,
-                a1,
-                Arc::clone(&state.frame_handle),
-                ui.ctx().clone(),
-                start,
-                Arc::clone(&state.cpal_rate),
+            if let Some(timeline) = player::build_preview_timeline(
+                &state.timeline.tracks,
+                &state.clips,
                 state.project_aspect.dims(),
-            );
-            state.timeline_player_thread = Some(thread);
-            state.timeline_pending_handle_rx = Some(handle_rx);
+            ) {
+                let (thread, handle_rx) = player::spawn_timeline_player(
+                    timeline,
+                    Arc::clone(&state.frame_handle),
+                    ui.ctx().clone(),
+                    start,
+                    Arc::clone(&state.cpal_rate),
+                );
+                state.timeline_player_thread = Some(thread);
+                state.timeline_pending_handle_rx = Some(handle_rx);
+            }
             state.timeline_is_paused = false;
         }
 
@@ -1859,88 +1795,24 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         let resume_pos =
                             Duration::from_secs_f64(state.timeline_playhead_secs.max(0.0));
                         state.stop_timeline_player();
-                        let clips = &state.clips;
-                        let make_tcd = |tc: &state::TimelineClip| player::TrackClipData {
-                            path: clips[tc.source_index].path.clone(),
-                            start_on_track: tc.start_on_track,
-                            in_point: tc.in_point,
-                            out_point: tc.out_point,
-                            transition: tc.transition,
-                            transition_duration: tc.transition_duration,
-                            gain_db: tc.gain_db,
-                            fade_in: tc.fade_in,
-                            fade_out: tc.fade_out,
-                            brightness: tc.brightness,
-                            contrast: tc.contrast,
-                            saturation: tc.saturation,
-                            wb_temperature: tc.wb_temperature,
-                            wb_tint: tc.wb_tint,
-                            hue_degrees: tc.hue_degrees,
-                            gamma_r: tc.gamma_r,
-                            gamma_g: tc.gamma_g,
-                            gamma_b: tc.gamma_b,
-                            lut_path: tc.lut_path.clone(),
-                            speed: tc.speed,
-                            freeze: tc.freeze,
-                            opacity: tc.opacity,
-                            blend_mode: tc.blend_mode,
-                            position_x: tc.position_x,
-                            position_y: tc.position_y,
-                            scale_pct: tc.scale_pct,
-                            vignette: tc.vignette,
-                            vignette_x: tc.vignette_x,
-                            vignette_y: tc.vignette_y,
-                            width: clips[tc.source_index]
-                                .info
-                                .primary_video()
-                                .map(|v| v.width())
-                                .unwrap_or(0),
-                            height: clips[tc.source_index]
-                                .info
-                                .primary_video()
-                                .map(|v| v.height())
-                                .unwrap_or(0),
-                            curves: tc.curves.clone(),
-                            wheels: tc.wheels,
-                            video_effects: tc.video_effects,
-                            transform: tc.transform,
-                            overlay: tc.overlay.clone(),
-                            subtitle: tc.subtitle.clone(),
-                            keying: tc.keying,
-                            mask: tc.mask.clone(),
-                            animation: tc.animation.clone(),
-                        };
-                        let tracks = &state.timeline.tracks;
-                        let audio_start = state.timeline.audio_track_start();
-                        let video_tracks: Vec<Vec<_>> = (0..audio_start)
-                            .map(|ti| {
-                                if track_is_active(tracks, ti) {
-                                    tracks[ti].clips.iter().map(make_tcd).collect()
-                                } else {
-                                    vec![]
-                                }
-                            })
-                            .collect();
-                        let a1: Vec<_> =
-                            if audio_start < tracks.len() && track_is_active(tracks, audio_start) {
-                                tracks[audio_start].clips.iter().map(make_tcd).collect()
-                            } else {
-                                vec![]
-                            };
                         state
                             .cpal_rate
                             .store(1.0f64.to_bits(), std::sync::atomic::Ordering::Relaxed);
-                        let (thread, handle_rx) = player::spawn_timeline_player(
-                            video_tracks,
-                            a1,
-                            Arc::clone(&state.frame_handle),
-                            ui.ctx().clone(),
-                            resume_pos,
-                            Arc::clone(&state.cpal_rate),
+                        if let Some(timeline) = player::build_preview_timeline(
+                            &state.timeline.tracks,
+                            &state.clips,
                             state.project_aspect.dims(),
-                        );
-                        state.timeline_player_thread = Some(thread);
-                        state.timeline_pending_handle_rx = Some(handle_rx);
+                        ) {
+                            let (thread, handle_rx) = player::spawn_timeline_player(
+                                timeline,
+                                Arc::clone(&state.frame_handle),
+                                ui.ctx().clone(),
+                                resume_pos,
+                                Arc::clone(&state.cpal_rate),
+                            );
+                            state.timeline_player_thread = Some(thread);
+                            state.timeline_pending_handle_rx = Some(handle_rx);
+                        }
                         state.clips_moved_while_paused = false;
                         state.timeline_is_paused = false;
                     } else {
@@ -3770,87 +3642,22 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             let resume_pos = Duration::from_secs_f64(state.timeline_playhead_secs.max(0.0));
             let aspect_canvas = state.project_aspect.dims();
             state.stop_timeline_player();
-            let clips = &state.clips;
-            let make_tcd = |tc: &state::TimelineClip| player::TrackClipData {
-                path: clips[tc.source_index].path.clone(),
-                start_on_track: tc.start_on_track,
-                in_point: tc.in_point,
-                out_point: tc.out_point,
-                transition: tc.transition,
-                transition_duration: tc.transition_duration,
-                gain_db: tc.gain_db,
-                fade_in: tc.fade_in,
-                fade_out: tc.fade_out,
-                brightness: tc.brightness,
-                contrast: tc.contrast,
-                saturation: tc.saturation,
-                wb_temperature: tc.wb_temperature,
-                wb_tint: tc.wb_tint,
-                hue_degrees: tc.hue_degrees,
-                gamma_r: tc.gamma_r,
-                gamma_g: tc.gamma_g,
-                gamma_b: tc.gamma_b,
-                lut_path: tc.lut_path.clone(),
-                speed: tc.speed,
-                freeze: tc.freeze,
-                opacity: tc.opacity,
-                blend_mode: tc.blend_mode,
-                position_x: tc.position_x,
-                position_y: tc.position_y,
-                scale_pct: tc.scale_pct,
-                vignette: tc.vignette,
-                vignette_x: tc.vignette_x,
-                vignette_y: tc.vignette_y,
-                width: clips[tc.source_index]
-                    .info
-                    .primary_video()
-                    .map(|v| v.width())
-                    .unwrap_or(0),
-                height: clips[tc.source_index]
-                    .info
-                    .primary_video()
-                    .map(|v| v.height())
-                    .unwrap_or(0),
-                curves: tc.curves.clone(),
-                wheels: tc.wheels,
-                video_effects: tc.video_effects,
-                transform: tc.transform,
-                overlay: tc.overlay.clone(),
-                subtitle: tc.subtitle.clone(),
-                keying: tc.keying,
-                mask: tc.mask.clone(),
-                animation: tc.animation.clone(),
-            };
-            let tracks = &state.timeline.tracks;
-            let audio_start = state.timeline.audio_track_start();
-            let video_tracks: Vec<Vec<_>> = (0..audio_start)
-                .map(|ti| {
-                    if track_is_active(tracks, ti) {
-                        tracks[ti].clips.iter().map(make_tcd).collect()
-                    } else {
-                        vec![]
-                    }
-                })
-                .collect();
-            let a1: Vec<_> = if audio_start < tracks.len() && track_is_active(tracks, audio_start) {
-                tracks[audio_start].clips.iter().map(make_tcd).collect()
-            } else {
-                vec![]
-            };
             state
                 .cpal_rate
                 .store(1.0f64.to_bits(), std::sync::atomic::Ordering::Relaxed);
-            let (thread, handle_rx) = player::spawn_timeline_player(
-                video_tracks,
-                a1,
-                Arc::clone(&state.frame_handle),
-                ctx,
-                resume_pos,
-                Arc::clone(&state.cpal_rate),
-                aspect_canvas,
-            );
-            state.timeline_player_thread = Some(thread);
-            state.timeline_pending_handle_rx = Some(handle_rx);
+            if let Some(timeline) =
+                player::build_preview_timeline(&state.timeline.tracks, &state.clips, aspect_canvas)
+            {
+                let (thread, handle_rx) = player::spawn_timeline_player(
+                    timeline,
+                    Arc::clone(&state.frame_handle),
+                    ctx.clone(),
+                    resume_pos,
+                    Arc::clone(&state.cpal_rate),
+                );
+                state.timeline_player_thread = Some(thread);
+                state.timeline_pending_handle_rx = Some(handle_rx);
+            }
         } else {
             // Paused or stopped: mark as dirty so Resume rebuilds with correct state.
             state.clips_moved_while_paused = true;

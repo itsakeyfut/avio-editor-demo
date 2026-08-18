@@ -5,79 +5,84 @@ use std::time::{Duration, Instant};
 
 use avio::{PlayerHandle, RgbaFrame};
 
-// ── TrackClipData ─────────────────────────────────────────────────────────────
+use crate::state;
 
-/// Minimal clip description for `spawn_timeline_player`.
-pub struct TrackClipData {
-    pub path: PathBuf,
-    pub start_on_track: Duration,
-    pub in_point: Option<Duration>,
-    pub out_point: Option<Duration>,
-    pub transition: Option<avio::XfadeTransition>,
-    pub transition_duration: Duration,
-    /// Per-clip audio gain in dB (`0.0` = unity). Forwarded to `Clip::volume_db`.
-    pub gain_db: f32,
-    /// Audio fade-in duration (`Duration::ZERO` = no fade).
-    pub fade_in: Duration,
-    /// Audio fade-out duration (`Duration::ZERO` = no fade).
-    pub fade_out: Duration,
-    /// Per-clip brightness. `0.0` = no change.
-    pub brightness: f32,
-    /// Per-clip contrast. `1.0` = no change.
-    pub contrast: f32,
-    /// Per-clip saturation. `1.0` = no change.
-    pub saturation: f32,
-    /// White-balance colour temperature (Kelvin). `WB_NEUTRAL_TEMP` + tint 0 = off.
-    pub wb_temperature: u32,
-    /// White-balance tint (added to the green multiplier).
-    pub wb_tint: f32,
-    /// Hue rotation in degrees (`0.0` = off).
-    pub hue_degrees: f32,
-    /// Per-channel gamma (`1.0` = off).
-    pub gamma_r: f32,
-    pub gamma_g: f32,
-    pub gamma_b: f32,
-    /// Optional 3D LUT (.cube) path.
-    pub lut_path: Option<PathBuf>,
-    /// Per-clip playback speed multiplier. `1.0` = normal speed.
-    pub speed: f32,
-    /// Freeze-frame spec, applied in preview + export so clip lengths match. #143.
-    pub freeze: Option<crate::state::Freeze>,
-    /// Per-clip opacity (`1.0` = fully opaque). Forwarded to `Clip::with_opacity`.
-    pub opacity: f32,
-    /// Per-clip blend mode. Forwarded to `Clip::with_blend_mode`.
-    pub blend_mode: avio::BlendMode,
-    /// Static overlay position (canvas px) for a PiP (V2+) clip. `Clip::with_position`.
-    pub position_x: f32,
-    pub position_y: f32,
-    /// Static uniform scale (% of source) for a PiP (V2+) clip. `FilterStep::ScaleAnimated`.
-    pub scale_pct: f32,
-    /// Vignette strength percentage (`0.0` = off) and normalized centre X/Y (%).
-    pub vignette: f32,
-    pub vignette_x: f32,
-    pub vignette_y: f32,
-    /// Source video dimensions — used to convert the normalized vignette centre
-    /// to pixel `x0`/`y0`. `0` when the source has no video stream.
-    pub width: u32,
-    pub height: u32,
-    /// Per-clip tone curves (Luma + R/G/B).
-    pub curves: crate::state::ToneCurves,
-    /// Per-clip 3-way colour corrector (lift / gamma / gain).
-    pub wheels: crate::state::ColorWheels,
-    /// Per-clip stackable video effects.
-    pub video_effects: crate::state::VideoEffects,
-    /// Per-clip geometric transform (crop / rotate / flip).
-    pub transform: crate::state::Transform,
-    /// Per-clip image overlay (watermark / logo).
-    pub overlay: crate::state::Overlay,
-    /// Per-clip burned-in subtitle (SRT / ASS).
-    pub subtitle: crate::state::Subtitle,
-    /// Per-clip chroma key (green/blue screen).
-    pub keying: crate::state::Keying,
-    /// Per-clip region-composite mask.
-    pub mask: crate::state::Mask,
-    /// Per-clip keyframe animation (opacity now; more properties in later phases).
-    pub animation: crate::state::ClipAnimation,
+// ── build_preview_timeline ────────────────────────────────────────────────────
+
+/// Projects the demo's live document (video/audio tracks + media pool) into the
+/// `avio::Timeline` the realtime preview plays.
+///
+/// Mute/solo is applied host-side (inactive tracks contribute no clips);
+/// `aspect_canvas` reframes each clip (fit/fill) and `is_export = false` gates out
+/// the export-only reverse (the preview plays forward). The per-clip effect chain
+/// is built by [`clip_effects::regenerate`](crate::clip_effects::regenerate) — the
+/// same projection the export path uses. Returns `None` when there is no V1 clip
+/// to play (nothing to preview).
+pub fn build_preview_timeline(
+    tracks: &[state::Track],
+    pool: &[state::ImportedClip],
+    aspect_canvas: Option<(u32, u32)>,
+) -> Option<avio::Timeline> {
+    use crate::ui::timeline::track_is_active;
+
+    let audio_start = tracks
+        .iter()
+        .take_while(|t| t.kind == state::TrackKind::Video)
+        .count();
+
+    let project = |tc: &state::TimelineClip| -> Option<avio::Clip> {
+        let src = pool.get(tc.source_index)?;
+        let dims = src
+            .info
+            .primary_video()
+            .map(|v| (v.width(), v.height()))
+            .unwrap_or((0, 0));
+        let mut base = avio::Clip::new(&src.path).offset(tc.start_on_track);
+        base.in_point = tc.in_point;
+        base.out_point = tc.out_point;
+        let params = crate::clip_effects::ClipParams::from_timeline_clip(tc);
+        Some(crate::clip_effects::regenerate(
+            base,
+            &params,
+            dims,
+            aspect_canvas,
+            false,
+        ))
+    };
+
+    let video_tracks: Vec<Vec<avio::Clip>> = (0..audio_start)
+        .map(|ti| {
+            if track_is_active(tracks, ti) {
+                tracks[ti].clips.iter().filter_map(&project).collect()
+            } else {
+                Vec::new()
+            }
+        })
+        .collect();
+    let a1: Vec<avio::Clip> = if audio_start < tracks.len() && track_is_active(tracks, audio_start)
+    {
+        tracks[audio_start]
+            .clips
+            .iter()
+            .filter_map(&project)
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    if video_tracks.first().is_none_or(Vec::is_empty) {
+        return None;
+    }
+    let mut builder = avio::Timeline::builder().video_track(video_tracks[0].clone());
+    for vn in video_tracks.iter().skip(1) {
+        if !vn.is_empty() {
+            builder = builder.video_track(vn.clone());
+        }
+    }
+    if !a1.is_empty() {
+        builder = builder.audio_track(a1);
+    }
+    builder.build().ok()
 }
 
 // ── EguiFrameSink ─────────────────────────────────────────────────────────────
@@ -424,63 +429,15 @@ pub fn spawn_player(
 /// Returns `(thread, handle_rx)`. `handle_rx` delivers the `PlayerHandle` once
 /// the runner is ready (one-shot).
 pub fn spawn_timeline_player(
-    video_tracks: Vec<Vec<TrackClipData>>,
-    a1: Vec<TrackClipData>,
+    timeline: avio::Timeline,
     frame_handle: Arc<Mutex<Option<RgbaFrame>>>,
     ctx: egui::Context,
     start_pos: Duration,
     cpal_rate: Arc<AtomicU64>,
-    canvas: Option<(u32, u32)>,
 ) -> (std::thread::JoinHandle<()>, mpsc::Receiver<PlayerHandle>) {
     let (handle_tx, handle_rx) = mpsc::sync_channel::<PlayerHandle>(1);
 
     let thread = std::thread::spawn(move || {
-        // One shared projection: build the clip's structural fields, then let
-        // `clip_effects::regenerate` bake the identical effect chain + native
-        // creative fields the export path builds (golden-tested against
-        // `clips_to_avio`). `is_export = false` gates out the export-only reverse
-        // so the preview plays forward. #143.
-        let make_clip = |tc: TrackClipData| -> avio::Clip {
-            let mut base = avio::Clip::new(&tc.path).offset(tc.start_on_track);
-            base.in_point = tc.in_point;
-            base.out_point = tc.out_point;
-            let params = crate::clip_effects::ClipParams::from_track_clip_data(&tc);
-            crate::clip_effects::regenerate(base, &params, (tc.width, tc.height), canvas, false)
-        };
-
-        let avio_video_tracks: Vec<Vec<avio::Clip>> = video_tracks
-            .into_iter()
-            .map(|track| track.into_iter().map(make_clip).collect())
-            .collect();
-        let a1_clips: Vec<avio::Clip> = a1.into_iter().map(make_clip).collect();
-
-        let Some(v1_clips) = avio_video_tracks.first() else {
-            log::warn!("spawn_timeline_player: no V1 clips");
-            return;
-        };
-        if v1_clips.is_empty() {
-            log::warn!("spawn_timeline_player: no V1 clips");
-            return;
-        }
-
-        let mut builder = avio::Timeline::builder().video_track(avio_video_tracks[0].clone());
-        for vn in avio_video_tracks.into_iter().skip(1) {
-            if !vn.is_empty() {
-                builder = builder.video_track(vn);
-            }
-        }
-        if !a1_clips.is_empty() {
-            builder = builder.audio_track(a1_clips);
-        }
-
-        let timeline = match builder.build() {
-            Ok(t) => t,
-            Err(e) => {
-                log::warn!("Timeline::builder().build() failed: {e}");
-                return;
-            }
-        };
-
         let (mut runner, handle) = match avio::TimelinePlayer::open(&timeline) {
             Ok(pair) => pair,
             Err(e) => {
