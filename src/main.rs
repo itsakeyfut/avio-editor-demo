@@ -1,4 +1,6 @@
 mod analysis;
+mod clip_effects;
+mod edit_history;
 mod export;
 mod gif;
 mod player;
