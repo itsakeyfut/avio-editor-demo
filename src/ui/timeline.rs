@@ -1856,18 +1856,28 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             state
                 .cpal_rate
                 .store(1.0f64.to_bits(), std::sync::atomic::Ordering::Relaxed);
-            let (thread, handle_rx) = player::spawn_timeline_player(
-                video_tracks,
-                a1,
-                Arc::clone(&state.frame_handle),
-                ui.ctx().clone(),
-                start,
-                Arc::clone(&state.cpal_rate),
-                state.project_aspect.dims(),
-            );
-            state.timeline_player_thread = Some(thread);
-            state.timeline_pending_handle_rx = Some(handle_rx);
-            state.timeline_is_paused = false;
+            match player::assemble_preview_timeline(video_tracks, a1, state.project_aspect.dims()) {
+                Ok(timeline) => {
+                    state.reseat_editor(timeline);
+                    match state.editor.as_ref() {
+                        Some(ed) => {
+                            let render_timeline = ed.current().clone();
+                            let (thread, handle_rx) = player::spawn_timeline_player(
+                                render_timeline,
+                                Arc::clone(&state.frame_handle),
+                                ui.ctx().clone(),
+                                start,
+                                Arc::clone(&state.cpal_rate),
+                            );
+                            state.timeline_player_thread = Some(thread);
+                            state.timeline_pending_handle_rx = Some(handle_rx);
+                            state.timeline_is_paused = false;
+                        }
+                        None => log::warn!("editor empty after reseat"),
+                    }
+                }
+                Err(e) => log::warn!("preview assemble: {e}"),
+            }
         }
 
         if is_playing {
@@ -1953,19 +1963,33 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         state
                             .cpal_rate
                             .store(1.0f64.to_bits(), std::sync::atomic::Ordering::Relaxed);
-                        let (thread, handle_rx) = player::spawn_timeline_player(
+                        match player::assemble_preview_timeline(
                             video_tracks,
                             a1,
-                            Arc::clone(&state.frame_handle),
-                            ui.ctx().clone(),
-                            resume_pos,
-                            Arc::clone(&state.cpal_rate),
                             state.project_aspect.dims(),
-                        );
-                        state.timeline_player_thread = Some(thread);
-                        state.timeline_pending_handle_rx = Some(handle_rx);
-                        state.clips_moved_while_paused = false;
-                        state.timeline_is_paused = false;
+                        ) {
+                            Ok(timeline) => {
+                                state.reseat_editor(timeline);
+                                match state.editor.as_ref() {
+                                    Some(ed) => {
+                                        let render_timeline = ed.current().clone();
+                                        let (thread, handle_rx) = player::spawn_timeline_player(
+                                            render_timeline,
+                                            Arc::clone(&state.frame_handle),
+                                            ui.ctx().clone(),
+                                            resume_pos,
+                                            Arc::clone(&state.cpal_rate),
+                                        );
+                                        state.timeline_player_thread = Some(thread);
+                                        state.timeline_pending_handle_rx = Some(handle_rx);
+                                        state.clips_moved_while_paused = false;
+                                        state.timeline_is_paused = false;
+                                    }
+                                    None => log::warn!("editor empty after reseat"),
+                                }
+                            }
+                            Err(e) => log::warn!("preview assemble: {e}"),
+                        }
                     } else {
                         if let Some(h) = &state.timeline_player_handle {
                             h.play();
@@ -3881,17 +3905,27 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
             state
                 .cpal_rate
                 .store(1.0f64.to_bits(), std::sync::atomic::Ordering::Relaxed);
-            let (thread, handle_rx) = player::spawn_timeline_player(
-                video_tracks,
-                a1,
-                Arc::clone(&state.frame_handle),
-                ctx,
-                resume_pos,
-                Arc::clone(&state.cpal_rate),
-                aspect_canvas,
-            );
-            state.timeline_player_thread = Some(thread);
-            state.timeline_pending_handle_rx = Some(handle_rx);
+            match player::assemble_preview_timeline(video_tracks, a1, aspect_canvas) {
+                Ok(timeline) => {
+                    state.reseat_editor(timeline);
+                    match state.editor.as_ref() {
+                        Some(ed) => {
+                            let render_timeline = ed.current().clone();
+                            let (thread, handle_rx) = player::spawn_timeline_player(
+                                render_timeline,
+                                Arc::clone(&state.frame_handle),
+                                ctx,
+                                resume_pos,
+                                Arc::clone(&state.cpal_rate),
+                            );
+                            state.timeline_player_thread = Some(thread);
+                            state.timeline_pending_handle_rx = Some(handle_rx);
+                        }
+                        None => log::warn!("editor empty after reseat"),
+                    }
+                }
+                Err(e) => log::warn!("preview assemble: {e}"),
+            }
         } else {
             // Paused or stopped: mark as dirty so Resume rebuilds with correct state.
             state.clips_moved_while_paused = true;

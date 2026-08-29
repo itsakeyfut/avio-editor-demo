@@ -546,25 +546,15 @@ pub fn assemble_preview_timeline(
 /// Returns `(thread, handle_rx)`. `handle_rx` delivers the `PlayerHandle` once
 /// the runner is ready (one-shot).
 pub fn spawn_timeline_player(
-    video_tracks: Vec<Vec<TrackClipData>>,
-    a1: Vec<TrackClipData>,
+    timeline: avio::Timeline,
     frame_handle: Arc<Mutex<Option<RgbaFrame>>>,
     ctx: egui::Context,
     start_pos: Duration,
     cpal_rate: Arc<AtomicU64>,
-    canvas: Option<(u32, u32)>,
 ) -> (std::thread::JoinHandle<()>, mpsc::Receiver<PlayerHandle>) {
     let (handle_tx, handle_rx) = mpsc::sync_channel::<PlayerHandle>(1);
 
     let thread = std::thread::spawn(move || {
-        let timeline = match assemble_preview_timeline(video_tracks, a1, canvas) {
-            Ok(t) => t,
-            Err(e) => {
-                log::warn!("assemble_preview_timeline: {e}");
-                return;
-            }
-        };
-
         let (mut runner, handle) = match avio::TimelinePlayer::open(&timeline) {
             Ok(pair) => pair,
             Err(e) => {
