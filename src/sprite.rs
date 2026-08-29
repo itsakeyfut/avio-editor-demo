@@ -10,7 +10,7 @@ pub fn generate_sprite_sheet(path: &Path, cols: u32, rows: u32) -> Option<(u32, 
     let stem = path.file_stem()?.to_string_lossy().into_owned();
     let out_path = std::env::temp_dir().join(format!("{stem}_sprite.png"));
 
-    avio::SpriteSheet::new(path)
+    ff_encode::SpriteSheet::new(path)
         .cols(cols)
         .rows(rows)
         .output(&out_path)

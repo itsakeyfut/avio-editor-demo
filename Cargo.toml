@@ -4,16 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-avio = { version = "0.16", features = [
-    "decode",
-    "encode",
-    "filter",
-    "pipeline",
-    "preview",
-    "preview-proxy",
-    "tokio",
-    "serde",
-] }
+avio = { version = "0.17", features = ["preview", "serde"] }
+# avio 0.17 (ADR-0004) removed the primitive re-exports; ff-* primitives are now imported directly.
+ff-preview = { version = "0.17", features = ["proxy"] } # PreviewPlayer, RgbaFrame, FrameSink, ProxyGenerator, ProxyResolution
+ff-encode = { version = "0.17", features = ["preview-image"] } # GifPreview, SpriteSheet
+ff-decode = { version = "0.17" }                              # ThumbnailSelector
+ff-filter = { version = "0.17" }                              # LoudnessMeter
+ff-remux = { version = "0.17" }                               # StreamCopyTrim
 
 eframe     = "0.33"
 egui       = "0.33"
@@ -37,3 +34,4 @@ ff-format   = { path = "../avio/crates/ff-format" }
 ff-probe    = { path = "../avio/crates/ff-probe" }
 ff-sys      = { path = "../avio/crates/ff-sys" }
 ff-common   = { path = "../avio/crates/ff-common" }
+ff-remux    = { path = "../avio/crates/ff-remux" }

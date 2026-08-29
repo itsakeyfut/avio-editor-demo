@@ -143,7 +143,7 @@ pub struct ProjectExportFilters {
 
 // ── Enum conversion helpers ───────────────────────────────────────────────────
 
-pub(crate) fn blend_mode_to_str(m: avio::BlendMode) -> &'static str {
+fn blend_mode_to_str(m: avio::BlendMode) -> &'static str {
     match m {
         avio::BlendMode::Normal => "Normal",
         avio::BlendMode::Multiply => "Multiply",
@@ -161,7 +161,7 @@ pub(crate) fn blend_mode_to_str(m: avio::BlendMode) -> &'static str {
     }
 }
 
-pub(crate) fn blend_mode_from_str(s: &str) -> avio::BlendMode {
+fn blend_mode_from_str(s: &str) -> avio::BlendMode {
     match s {
         "Multiply" => avio::BlendMode::Multiply,
         "Screen" => avio::BlendMode::Screen,
@@ -178,7 +178,7 @@ pub(crate) fn blend_mode_from_str(s: &str) -> avio::BlendMode {
     }
 }
 
-pub(crate) fn xfade_from_str(s: &str) -> Option<avio::XfadeTransition> {
+fn xfade_from_str(s: &str) -> Option<avio::XfadeTransition> {
     match s {
         "dissolve" => Some(avio::XfadeTransition::Dissolve),
         "fade" => Some(avio::XfadeTransition::Fade),

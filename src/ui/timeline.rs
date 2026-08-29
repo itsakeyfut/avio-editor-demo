@@ -1578,7 +1578,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     let path = state.clips[tc.source_index].path.clone();
                     let tx = state.loudness_tx.clone();
                     tokio::task::spawn_blocking(move || {
-                        let result = avio::LoudnessMeter::new(&path)
+                        let result = ff_filter::LoudnessMeter::new(&path)
                             .measure()
                             .ok()
                             .map(|r| state::LoudnessResult {

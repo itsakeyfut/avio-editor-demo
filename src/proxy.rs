@@ -15,8 +15,8 @@ pub fn spawn_proxy_job(
     let status = Arc::new(Mutex::new(ProxyStatus::Running));
     let status_clone = Arc::clone(&status);
     tokio::task::spawn_blocking(move || {
-        let result = avio::ProxyGenerator::new(&source_path).and_then(|g| {
-            g.resolution(avio::ProxyResolution::Quarter)
+        let result = ff_preview::ProxyGenerator::new(&source_path).and_then(|g| {
+            g.resolution(ff_preview::ProxyResolution::Quarter)
                 .output_dir(&proxy_dir)
                 .generate()
         });
