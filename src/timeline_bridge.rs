@@ -98,6 +98,32 @@ pub(crate) fn to_avio(
     builder.build()
 }
 
+/// Reconstructs `TimelineState.tracks` from an `avio::Timeline`: video tracks
+/// first, then audio (matching the demo's flat-vec convention), carrying each
+/// track's native `mute`/`solo` flags and reconstructing its clips via
+/// [`load_demo_clip`] (clips with missing/unparseable metadata are dropped).
+#[allow(dead_code)]
+pub(crate) fn from_avio(timeline: &avio::Timeline) -> Vec<state::Track> {
+    let mut tracks = Vec::new();
+    for t in timeline.video_tracks() {
+        tracks.push(state::Track {
+            kind: state::TrackKind::Video,
+            muted: t.mute,
+            soloed: t.solo,
+            clips: t.clips.iter().filter_map(load_demo_clip).collect(),
+        });
+    }
+    for t in timeline.audio_tracks() {
+        tracks.push(state::Track {
+            kind: state::TrackKind::Audio,
+            muted: t.mute,
+            soloed: t.solo,
+            clips: t.clips.iter().filter_map(load_demo_clip).collect(),
+        });
+    }
+    tracks
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,5 +190,100 @@ mod tests {
         // formatting isn't available here; assert! still exercises the same
         // PartialEq round-trip check.
         assert!(back == tc);
+    }
+
+    /// A neutral `TimelineClip` at `source_index`/`start`, used as a baseline
+    /// for the round-trip test below (individual fields are overridden per
+    /// clip to prove non-default values survive too).
+    fn neutral_clip(source_index: usize, start: Duration) -> state::TimelineClip {
+        state::TimelineClip {
+            source_index,
+            start_on_track: start,
+            in_point: None,
+            out_point: None,
+            transition: None,
+            transition_duration: Duration::ZERO,
+            gain_db: 0.0,
+            fade_in: Duration::ZERO,
+            fade_out: Duration::ZERO,
+            brightness: 0.0,
+            contrast: 1.0,
+            saturation: 1.0,
+            speed: 1.0,
+            reverse: false,
+            freeze: None,
+            opacity: 1.0,
+            blend_mode: avio::BlendMode::Normal,
+            position_x: 0.0,
+            position_y: 0.0,
+            scale_pct: 100.0,
+            lut_path: None,
+            wb_temperature: 0,
+            wb_tint: 0.0,
+            hue_degrees: 0.0,
+            gamma_r: 1.0,
+            gamma_g: 1.0,
+            gamma_b: 1.0,
+            vignette: 0.0,
+            vignette_x: 50.0,
+            vignette_y: 50.0,
+            curves: state::ToneCurves::default(),
+            wheels: state::ColorWheels::default(),
+            video_effects: state::VideoEffects::default(),
+            transform: state::Transform::default(),
+            overlay: state::Overlay::default(),
+            subtitle: state::Subtitle::default(),
+            keying: state::Keying::default(),
+            mask: state::Mask::default(),
+            animation: state::ClipAnimation::default(),
+        }
+    }
+
+    #[test]
+    fn from_avio_round_trips_tracks_clips_and_mute_solo() {
+        // helper: an avio clip carrying tc, with authoritative structural fields
+        fn carried(tc: &state::TimelineClip) -> avio::Clip {
+            let mut c = avio::Clip::new("x.mp4").offset(tc.start_on_track);
+            c.in_point = tc.in_point;
+            c.out_point = tc.out_point;
+            store_demo_clip(&mut c, tc);
+            c
+        }
+        let v0 = neutral_clip(0, Duration::ZERO);
+        let mut v1 = neutral_clip(1, Duration::from_secs(5));
+        v1.in_point = Some(Duration::from_secs(1));
+        v1.out_point = Some(Duration::from_secs(4));
+        v1.wb_temperature = 5000;
+        v1.transform = state::Transform {
+            rotation: 45.0,
+            ..state::Transform::default()
+        };
+        v1.mask = state::Mask {
+            shape: state::MaskShape::Rectangle,
+            ..state::Mask::default()
+        };
+        let a0 = neutral_clip(2, Duration::from_secs(1));
+
+        let timeline = avio::Timeline::builder()
+            // Explicit canvas/fps avoid probing "x.mp4" (which doesn't exist on disk).
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track_with(avio::Track::new(vec![carried(&v0)]))
+            .video_track_with(avio::Track::new(vec![carried(&v1)]).muted(true))
+            .audio_track_with(avio::Track::new(vec![carried(&a0)]).soloed(true))
+            .build()
+            .expect("builds");
+
+        let tracks = from_avio(&timeline);
+        assert!(tracks.len() == 3);
+        assert!(tracks[0].kind == state::TrackKind::Video);
+        assert!(!tracks[0].muted);
+        assert!(tracks[0].clips == vec![v0]);
+        assert!(tracks[1].kind == state::TrackKind::Video);
+        assert!(tracks[1].muted); // muted track's clip survived reconstruction
+        assert!(tracks[1].clips == vec![v1]);
+        assert!(tracks[2].kind == state::TrackKind::Audio);
+        assert!(tracks[2].soloed);
+        assert!(tracks[2].clips == vec![a0]);
     }
 }
