@@ -87,6 +87,10 @@ pub struct AppState {
     pub sprite_tx: mpsc::SyncSender<(usize, u32, u32, Vec<u8>)>,
     pub sprite_rx: mpsc::Receiver<(usize, u32, u32, Vec<u8>)>,
     pub timeline: TimelineState,
+    /// avio edit engine holding the composed timeline. In P1 it is a write-only
+    /// derived mirror, reseated from the current timeline right before each
+    /// preview/export (`None` until first reseat). P2+ makes it the edit truth.
+    pub editor: Option<avio::Editor>,
     pub trim_jobs: Vec<TrimJobHandle>,
     pub gif_jobs: Vec<GifJobHandle>,
     pub proxy_jobs: Vec<ProxyJobHandle>,
@@ -199,6 +203,7 @@ impl Default for AppState {
             sprite_tx,
             sprite_rx,
             timeline: TimelineState::default(),
+            editor: None,
             trim_jobs: Vec::new(),
             gif_jobs: Vec::new(),
             proxy_jobs: Vec::new(),
@@ -1458,6 +1463,12 @@ impl AppState {
         if self.undo_stack.len() > 50 {
             self.undo_stack.remove(0);
         }
+    }
+
+    /// Replaces the editor's timeline (P1: write-only derived mirror, reseated
+    /// before each preview/export).
+    pub fn reseat_editor(&mut self, timeline: avio::Timeline) {
+        self.editor = Some(avio::Editor::new(timeline));
     }
 
     fn pause_timeline_if_playing(&mut self) {
