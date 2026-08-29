@@ -1367,9 +1367,25 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     },
                     canvas: state.project_aspect.dims(),
                 };
-                state
-                    .export_queue
-                    .push(export::QueueJob::new(snapshot, output_path));
+                let config = snapshot.encoder_config.to_encoder_config();
+                match export::assemble_export_timeline(snapshot) {
+                    Ok((timeline, total_frames_estimate)) => {
+                        state.reseat_editor(timeline);
+                        match state.editor.as_ref() {
+                            Some(ed) => {
+                                let render_timeline = ed.current().clone();
+                                state.export_queue.push(export::QueueJob::new(
+                                    render_timeline,
+                                    config,
+                                    total_frames_estimate,
+                                    output_path,
+                                ));
+                            }
+                            None => log::warn!("editor empty after reseat"),
+                        }
+                    }
+                    Err(e) => log::warn!("export assemble: {e}"),
+                }
             }
             ui.toggle_value(&mut state.show_export_settings, "⚙")
                 .on_hover_text("Export settings");

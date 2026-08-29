@@ -90,7 +90,6 @@ pub struct AppState {
     /// avio edit engine holding the composed timeline. In P1 it is a write-only
     /// derived mirror, reseated from the current timeline right before each
     /// preview/export (`None` until first reseat). P2+ makes it the edit truth.
-    #[allow(dead_code)]
     pub editor: Option<avio::Editor>,
     pub trim_jobs: Vec<TrimJobHandle>,
     pub gif_jobs: Vec<GifJobHandle>,
@@ -1468,7 +1467,6 @@ impl AppState {
 
     /// Replaces the editor's timeline (P1: write-only derived mirror, reseated
     /// before each preview/export).
-    #[allow(dead_code)]
     pub fn reseat_editor(&mut self, timeline: avio::Timeline) {
         self.editor = Some(avio::Editor::new(timeline));
     }

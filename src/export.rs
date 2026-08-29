@@ -117,22 +117,33 @@ pub struct ExportSnapshot {
 
 /// A single entry in the export queue.
 ///
-/// The snapshot is stored as `Option` and consumed (via `.take()`) when
-/// rendering begins so it cannot be accidentally re-used.
+/// The timeline/config are stored as `Option` and consumed (via `.take()`)
+/// when rendering begins so they cannot be accidentally re-used.
 pub struct QueueJob {
     pub output_path: PathBuf,
-    /// Snapshot captured at "Add to Queue" time. `None` after rendering starts.
-    pub snapshot: Option<ExportSnapshot>,
+    /// Timeline assembled (on the main thread) at "Add to Queue" time.
+    /// `None` after rendering starts.
+    pub timeline: Option<avio::Timeline>,
+    /// Encoder config captured at "Add to Queue" time. `None` after rendering starts.
+    pub config: Option<avio::EncoderConfig>,
+    pub total_frames_estimate: Option<u64>,
     pub status: Arc<Mutex<crate::state::QueueJobStatus>>,
     pub progress: Arc<AtomicU32>,
     pub cancel: Arc<AtomicBool>,
 }
 
 impl QueueJob {
-    pub fn new(snapshot: ExportSnapshot, output_path: PathBuf) -> Self {
+    pub fn new(
+        timeline: avio::Timeline,
+        config: avio::EncoderConfig,
+        total_frames_estimate: Option<u64>,
+        output_path: PathBuf,
+    ) -> Self {
         Self {
             output_path,
-            snapshot: Some(snapshot),
+            timeline: Some(timeline),
+            config: Some(config),
+            total_frames_estimate,
             status: Arc::new(Mutex::new(crate::state::QueueJobStatus::Pending)),
             progress: Arc::new(AtomicU32::new(0)),
             cancel: Arc::new(AtomicBool::new(false)),
@@ -142,14 +153,19 @@ impl QueueJob {
 
 /// Starts rendering `job` in the background.
 ///
-/// Takes the snapshot from `job.snapshot`, sets status to `Running`, and
+/// Takes the timeline/config from `job`, sets status to `Running`, and
 /// spawns a `tokio::task::spawn_blocking` call. Returns `false` if the job is
-/// not `Pending` or the snapshot was already consumed.
+/// not `Pending` or the timeline/config were already consumed.
 pub fn spawn_queue_job(job: &mut QueueJob) -> bool {
-    let snapshot = match job.snapshot.take() {
-        Some(s) => s,
+    let timeline = match job.timeline.take() {
+        Some(t) => t,
         None => return false,
     };
+    let config = match job.config.take() {
+        Some(c) => c,
+        None => return false,
+    };
+    let total_frames_estimate = job.total_frames_estimate;
     {
         let mut s = job.status.lock().unwrap_or_else(|e| e.into_inner());
         if *s != crate::state::QueueJobStatus::Pending {
@@ -163,7 +179,14 @@ pub fn spawn_queue_job(job: &mut QueueJob) -> bool {
     let output = job.output_path.clone();
 
     tokio::task::spawn_blocking(move || {
-        let result = build_and_render(snapshot, &output, &progress, &cancel);
+        let result = build_and_render(
+            timeline,
+            config,
+            total_frames_estimate,
+            &output,
+            &progress,
+            &cancel,
+        );
         let mut guard = status.lock().unwrap_or_else(|e| e.into_inner());
         *guard = match result {
             Ok(()) => crate::state::QueueJobStatus::Done(output),
@@ -1256,13 +1279,13 @@ pub(crate) fn assemble_export_timeline(
 }
 
 fn build_and_render(
-    snapshot: ExportSnapshot,
+    timeline: avio::Timeline,
+    config: avio::EncoderConfig,
+    total_frames_estimate: Option<u64>,
     output: &std::path::Path,
     progress: &Arc<AtomicU32>,
     cancel: &Arc<AtomicBool>,
 ) -> Result<(), String> {
-    let config = snapshot.encoder_config.to_encoder_config();
-    let (timeline, total_frames_estimate) = assemble_export_timeline(snapshot)?;
     let progress_ref = Arc::clone(progress);
     let cancel_ref = Arc::clone(cancel);
     let render_result = timeline.render_with_progress(output, config, move |p| {
