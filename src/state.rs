@@ -90,7 +90,7 @@ pub struct AppState {
     pub trim_jobs: Vec<TrimJobHandle>,
     pub gif_jobs: Vec<GifJobHandle>,
     pub proxy_jobs: Vec<ProxyJobHandle>,
-    pub frame_handle: Arc<Mutex<Option<avio::RgbaFrame>>>,
+    pub frame_handle: Arc<Mutex<Option<ff_preview::RgbaFrame>>>,
     pub preview_texture: Option<egui::TextureHandle>,
     pub player_thread: Option<std::thread::JoinHandle<()>>,
     pub player_handle: Option<avio::PlayerHandle>,

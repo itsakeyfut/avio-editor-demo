@@ -16,7 +16,7 @@ pub fn spawn_trim(
     let status_clone = Arc::clone(&status);
     tokio::task::spawn_blocking(move || {
         let result =
-            avio::StreamCopyTrim::new(&source_path, in_point, out_point, &output_path).run();
+            ff_remux::StreamCopyTrim::new(&source_path, in_point, out_point, &output_path).run();
         *status_clone.lock().unwrap() = match result {
             Ok(()) => TrimStatus::Done(output_path),
             Err(e) => TrimStatus::Failed(e.to_string()),

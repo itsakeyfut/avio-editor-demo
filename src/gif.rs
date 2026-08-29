@@ -24,7 +24,7 @@ pub fn spawn_gif(
             Some(out) => out.saturating_sub(start),
             None => clip_duration.saturating_sub(start),
         };
-        let result = avio::GifPreview::new(&source_path)
+        let result = ff_encode::GifPreview::new(&source_path)
             .start(start)
             .duration(duration)
             .fps(10.0)

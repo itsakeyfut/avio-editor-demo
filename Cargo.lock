@@ -484,7 +484,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "avio"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "ff-analysis",
  "ff-common",
@@ -495,8 +495,8 @@ dependencies = [
  "ff-pipeline",
  "ff-preview",
  "ff-probe",
- "ff-remux",
  "log",
+ "serde",
  "thiserror 2.0.18",
 ]
 
@@ -509,6 +509,11 @@ dependencies = [
  "eframe",
  "egui",
  "env_logger",
+ "ff-decode",
+ "ff-encode",
+ "ff-filter",
+ "ff-preview",
+ "ff-remux",
  "image",
  "log",
  "rfd",
@@ -1299,7 +1304,7 @@ dependencies = [
 
 [[package]]
 name = "ff-analysis"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "ff-decode",
  "ff-format",
@@ -1310,38 +1315,35 @@ dependencies = [
 
 [[package]]
 name = "ff-common"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "log",
 ]
 
 [[package]]
 name = "ff-decode"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "ff-common",
  "ff-format",
  "ff-sys",
- "futures",
  "log",
  "thiserror 2.0.18",
- "tokio",
 ]
 
 [[package]]
 name = "ff-encode"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "ff-format",
  "ff-sys",
  "log",
  "thiserror 2.0.18",
- "tokio",
 ]
 
 [[package]]
 name = "ff-filter"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "ff-common",
  "ff-format",
@@ -1353,16 +1355,17 @@ dependencies = [
 
 [[package]]
 name = "ff-format"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "ff-common",
  "log",
+ "serde",
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "ff-pipeline"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "ff-common",
  "ff-decode",
@@ -1375,7 +1378,7 @@ dependencies = [
 
 [[package]]
 name = "ff-preview"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "ff-decode",
  "ff-encode",
@@ -1386,12 +1389,11 @@ dependencies = [
  "ff-sys",
  "log",
  "thiserror 2.0.18",
- "tokio",
 ]
 
 [[package]]
 name = "ff-probe"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "ff-format",
  "ff-sys",
@@ -1401,7 +1403,7 @@ dependencies = [
 
 [[package]]
 name = "ff-remux"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "ff-format",
  "ff-sys",
@@ -1411,7 +1413,7 @@ dependencies = [
 
 [[package]]
 name = "ff-sys"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "bindgen",
  "log",
@@ -1484,46 +1486,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "futures"
-version = "0.3.32"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b147ee9d1f6d097cef9ce628cd2ee62288d963e16fb287bd9286455b241382d"
-dependencies = [
- "futures-channel",
- "futures-core",
- "futures-executor",
- "futures-io",
- "futures-sink",
- "futures-task",
- "futures-util",
-]
-
-[[package]]
-name = "futures-channel"
-version = "0.3.32"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07bbe89c50d7a535e539b8c17bc0b49bdb77747034daa8087407d655f3f7cc1d"
-dependencies = [
- "futures-core",
- "futures-sink",
-]
-
-[[package]]
 name = "futures-core"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7e3450815272ef58cec6d564423f6e755e25379b217b0bc688e295ba24df6b1d"
-
-[[package]]
-name = "futures-executor"
-version = "0.3.32"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "baf29c38818342a3b26b5b923639e7b1f4a61fc5e76102d4b1981c6dc7a7579d"
-dependencies = [
- "futures-core",
- "futures-task",
- "futures-util",
-]
 
 [[package]]
 name = "futures-io"
@@ -1556,12 +1522,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "futures-sink"
-version = "0.3.32"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c39754e157331b013978ec91992bde1ac089843443c49cbc7f46150b0fad0893"
-
-[[package]]
 name = "futures-task"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1573,13 +1533,9 @@ version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "389ca41296e6190b48053de0321d02a77f32f8a5d2461dd38762c0593805c6d6"
 dependencies = [
- "futures-channel",
  "futures-core",
- "futures-io",
  "futures-macro",
- "futures-sink",
  "futures-task",
- "memchr",
  "pin-project-lite",
  "slab",
 ]

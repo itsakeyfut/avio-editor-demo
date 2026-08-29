@@ -3,7 +3,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-use avio::{PlayerHandle, RgbaFrame};
+use avio::PlayerHandle;
+use ff_preview::RgbaFrame;
 
 // ── TrackClipData ─────────────────────────────────────────────────────────────
 
@@ -103,7 +104,7 @@ struct EguiFrameSink {
     diag_rate: f64,
 }
 
-impl avio::FrameSink for EguiFrameSink {
+impl ff_preview::FrameSink for EguiFrameSink {
     fn push_frame(&mut self, rgba: &[u8], width: u32, height: u32, pts: Duration) {
         let audio_f = self.audio_frames.load(Ordering::Relaxed);
         let audio_ms_hw = audio_f * 1000 / 48_000; // hardware wall-clock ms (for rate check)
@@ -355,7 +356,7 @@ pub fn spawn_player(
             );
         }
 
-        let player = match avio::PreviewPlayer::open(&path) {
+        let player = match ff_preview::PreviewPlayer::open(&path) {
             Ok(p) => p,
             Err(e) => {
                 log::warn!("PreviewPlayer::open failed path={path:?}: {e}");
