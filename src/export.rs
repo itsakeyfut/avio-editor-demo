@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// Send-safe snapshot of a single clip on any track.
-pub struct ExportClip {
+pub(crate) struct ExportClip {
     pub path: PathBuf,
     pub start_on_track: Duration,
     pub in_point: Option<Duration>,
@@ -89,6 +89,76 @@ pub struct ExportClip {
     pub mask: crate::state::Mask,
     /// Per-clip keyframe animation (opacity now; more properties in later phases).
     pub animation: crate::state::ClipAnimation,
+}
+
+/// Builds an [`ExportClip`] from a `TimelineClip` and its media-pool entry.
+///
+/// Returns `None` (logging a warning) when `tc.source_index` is out of range
+/// for `pool`, matching the original inline `make_clip` closure's behavior.
+pub(crate) fn timeline_clip_to_export_clip(
+    tc: &crate::state::TimelineClip,
+    pool: &[crate::state::ImportedClip],
+    use_proxy: bool,
+) -> Option<ExportClip> {
+    let Some(src) = pool.get(tc.source_index) else {
+        log::warn!(
+            "timeline_clip_to_export_clip: source_index {} out of range (pool len {})",
+            tc.source_index,
+            pool.len()
+        );
+        return None;
+    };
+    Some(ExportClip {
+        path: src.path.clone(),
+        start_on_track: tc.start_on_track,
+        in_point: tc.in_point,
+        out_point: tc.out_point,
+        transition: tc.transition,
+        transition_duration: tc.transition_duration,
+        source_duration: src.info.duration(),
+        fps: src.info.frame_rate().unwrap_or(30.0),
+        has_audio: src.info.primary_audio().is_some(),
+        gain_db: tc.gain_db,
+        fade_in: tc.fade_in,
+        fade_out: tc.fade_out,
+        brightness: tc.brightness,
+        contrast: tc.contrast,
+        saturation: tc.saturation,
+        speed: tc.speed,
+        reverse: tc.reverse,
+        freeze: tc.freeze,
+        opacity: tc.opacity,
+        blend_mode: tc.blend_mode,
+        position_x: tc.position_x,
+        position_y: tc.position_y,
+        scale_pct: tc.scale_pct,
+        proxy_path: if use_proxy {
+            src.proxy_path.clone()
+        } else {
+            None
+        },
+        lut_path: tc.lut_path.clone(),
+        wb_temperature: tc.wb_temperature,
+        wb_tint: tc.wb_tint,
+        hue_degrees: tc.hue_degrees,
+        gamma_r: tc.gamma_r,
+        gamma_g: tc.gamma_g,
+        gamma_b: tc.gamma_b,
+        vignette: tc.vignette,
+        vignette_x: tc.vignette_x,
+        vignette_y: tc.vignette_y,
+        width: src.info.primary_video().map(|v| v.width()).unwrap_or(0),
+        height: src.info.primary_video().map(|v| v.height()).unwrap_or(0),
+        curves: tc.curves.clone(),
+        wheels: tc.wheels,
+        video_effects: tc.video_effects,
+        transform: tc.transform,
+        overlay: tc.overlay.clone(),
+        subtitle: tc.subtitle.clone(),
+        keying: tc.keying,
+        mask: tc.mask.clone(),
+        animation: tc.animation.clone(),
+    })
 }
 
 /// Send-safe snapshot of all timeline tracks, constructed on the main thread
@@ -894,7 +964,7 @@ pub fn apply_freeze(clip: avio::Clip, freeze: Option<crate::state::Freeze>) -> a
     }
 }
 
-fn clips_to_avio(clips: Vec<ExportClip>, canvas: Option<(u32, u32)>) -> Vec<avio::Clip> {
+pub(crate) fn clips_to_avio(clips: Vec<ExportClip>, canvas: Option<(u32, u32)>) -> Vec<avio::Clip> {
     clips
         .into_iter()
         .map(|c| {
