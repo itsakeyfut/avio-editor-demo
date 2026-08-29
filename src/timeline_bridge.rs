@@ -25,10 +25,14 @@ pub(crate) fn store_demo_clip(clip: &mut avio::Clip, tc: &state::TimelineClip) {
     );
 }
 
-/// Reconstructs the source `TimelineClip` from `clip.metadata`, overriding its
-/// structural fields (`start_on_track`/`in_point`/`out_point`) with the avio
-/// clip's own first-class `offset`/`in_point`/`out_point` — those are
-/// authoritative once the clip has been built into a timeline.
+/// Reconstructs the source `TimelineClip` from `clip.metadata`, overriding
+/// exactly these fields with the avio clip's own first-class fields —
+/// `start_on_track` (from `offset`), `in_point`, `out_point`, `transition`,
+/// `transition_duration`, `fade_in`, `fade_out` — since those are
+/// authoritative once the clip has been built into a timeline (e.g. `SplitClip`
+/// clears `transition`/`transition_duration`/`fade_in`/`fade_out` on the avio
+/// clip, and a stale JSON blob must not resurrect them). Every other field on
+/// the returned `TimelineClip` comes as-is from the JSON blob.
 ///
 /// Returns `None` when the metadata is missing, empty, or fails to parse
 /// (logging a warning in the parse-error case).
@@ -43,6 +47,10 @@ pub(crate) fn load_demo_clip(clip: &avio::Clip) -> Option<state::TimelineClip> {
             tc.start_on_track = clip.offset;
             tc.in_point = clip.in_point;
             tc.out_point = clip.out_point;
+            tc.transition = clip.transition;
+            tc.transition_duration = clip.transition_duration;
+            tc.fade_in = clip.fade_in;
+            tc.fade_out = clip.fade_out;
             Some(tc)
         }
         Err(e) => {
@@ -53,9 +61,18 @@ pub(crate) fn load_demo_clip(clip: &avio::Clip) -> Option<state::TimelineClip> {
 }
 
 /// Builds an `avio::Timeline` from the demo's `TimelineState`, carrying each
-/// source `TimelineClip` as metadata JSON on the resulting `avio::Clip` and
-/// using avio-native `Track` mute/solo flags (so muted tracks keep their
-/// clips in the model; avio's `is_active()` excludes them from render).
+/// source `TimelineClip` as metadata JSON on the resulting `avio::Clip`.
+///
+/// avio's native `Track::is_active()` scopes solo *per track list*
+/// (video/audio separately), but the demo's mute/solo (`track_is_active` in
+/// `ui/timeline.rs`) scopes solo *globally* across the whole flat
+/// video+audio `tracks` vec — soloing a video track also silences a
+/// non-soloed audio track. To render exactly the demo's semantics, each
+/// avio `Track`'s `enabled` flag is set to the demo's global active state
+/// (`any_solo` computed over all tracks), while `muted`/`soloed` still carry
+/// the raw demo flags unchanged (so `from_avio` round-trips them). This
+/// makes avio's own per-list `is_active()` collapse to that `enabled` value
+/// regardless of its per-list scoping — see the inline comment below.
 ///
 /// Returns `Err` when `TimelineBuilder::build()` fails (e.g. `timeline.tracks`
 /// is empty, or a first-clip probe fails) — propagated rather than papered
@@ -71,6 +88,9 @@ pub(crate) fn to_avio(
     if let Some((w, h)) = canvas {
         builder = builder.canvas(w, h);
     }
+    // Demo's global solo flag (matches ui/timeline.rs's track_is_active): solo
+    // scopes across the whole flat video+audio tracks vec, not per list.
+    let any_solo = timeline.tracks.iter().any(|t| t.soloed);
     for tr in &timeline.tracks {
         // Build avio::Clips for this track, carrying each source TimelineClip as JSON.
         let mut avio_clips: Vec<avio::Clip> = Vec::new();
@@ -85,11 +105,16 @@ pub(crate) fn to_avio(
                 avio_clips.push(c);
             }
         }
-        // Native avio Track with the demo's mute/solo — clips stay in the model,
-        // avio's is_active() excludes muted/non-soloed tracks from render.
+        // `active` mirrors the demo's global track_is_active exactly. Setting
+        // it as avio's `enabled` makes avio's per-list `is_active(any_solo_in_list)
+        // = enabled && !mute && (!any_solo_in_list || solo)` reduce to `active`
+        // in every case: when `active` is false, `enabled == false` forces it;
+        // when `active` is true, both `!mute` and the solo clause also hold.
+        let active = if any_solo { tr.soloed } else { !tr.muted };
         let track = avio::Track::new(avio_clips)
             .muted(tr.muted)
-            .soloed(tr.soloed);
+            .soloed(tr.soloed)
+            .enabled(active);
         builder = match tr.kind {
             state::TrackKind::Video => builder.video_track_with(track),
             state::TrackKind::Audio => builder.audio_track_with(track),
@@ -180,6 +205,10 @@ mod tests {
         clip.offset = Duration::from_secs(9);
         clip.in_point = Some(Duration::from_secs(1));
         clip.out_point = Some(Duration::from_secs(4));
+        clip.transition = tc.transition;
+        clip.transition_duration = tc.transition_duration;
+        clip.fade_in = tc.fade_in;
+        clip.fade_out = tc.fade_out;
         store_demo_clip(&mut clip, &tc);
         let back = load_demo_clip(&clip).expect("some");
         // Structural fields come from the avio clip, not the JSON's originals:
@@ -189,6 +218,40 @@ mod tests {
         // TimelineClip has no Debug impl, so assert_eq!'s failure-message
         // formatting isn't available here; assert! still exercises the same
         // PartialEq round-trip check.
+        assert!(back == tc);
+    }
+
+    #[test]
+    fn load_demo_clip_prefers_cleared_first_class_transition_and_fades_over_stale_json() {
+        // Simulate a split: the JSON blob still carries the pre-split
+        // transition/fades, but the avio clip's first-class fields were
+        // cleared by SplitClip — those cleared values must win.
+        let mut tc = state::TimelineClip {
+            transition: Some(avio::XfadeTransition::Dissolve),
+            transition_duration: Duration::from_millis(500),
+            fade_in: Duration::from_millis(300),
+            fade_out: Duration::from_millis(300),
+            ..neutral_clip(0, Duration::ZERO)
+        };
+        let mut clip = avio::Clip::new("x.mp4");
+        clip.transition = None;
+        clip.transition_duration = Duration::ZERO;
+        clip.fade_in = Duration::ZERO;
+        clip.fade_out = Duration::ZERO;
+        store_demo_clip(&mut clip, &tc);
+
+        let back = load_demo_clip(&clip).expect("some");
+        assert!(back.transition.is_none());
+        assert!(back.transition_duration == Duration::ZERO);
+        assert!(back.fade_in == Duration::ZERO);
+        assert!(back.fade_out == Duration::ZERO);
+
+        // sanity: not just because tc was already cleared — the JSON really
+        // did carry the non-cleared values before the override.
+        tc.transition = None;
+        tc.transition_duration = Duration::ZERO;
+        tc.fade_in = Duration::ZERO;
+        tc.fade_out = Duration::ZERO;
         assert!(back == tc);
     }
 
@@ -285,5 +348,43 @@ mod tests {
         assert!(tracks[2].kind == state::TrackKind::Audio);
         assert!(tracks[2].soloed);
         assert!(tracks[2].clips == vec![a0]);
+    }
+
+    #[test]
+    fn to_avio_maps_demo_global_solo_onto_avio_enabled() {
+        // A soloed video track and a non-soloed audio track: under the demo's
+        // GLOBAL solo semantics (track_is_active in ui/timeline.rs), soloing
+        // the video track must also silence the non-soloed audio track, even
+        // though avio's native is_active() scopes solo per track list.
+        let state = state::TimelineState {
+            tracks: vec![
+                state::Track {
+                    kind: state::TrackKind::Video,
+                    clips: Vec::new(),
+                    muted: false,
+                    soloed: true,
+                },
+                state::Track {
+                    kind: state::TrackKind::Audio,
+                    clips: Vec::new(),
+                    muted: false,
+                    soloed: false,
+                },
+            ],
+            pixels_per_second: 1.0,
+            title_clips: Vec::new(),
+        };
+
+        let timeline = to_avio(&state, &[], Some((1920, 1080)), false).expect("builds");
+
+        let video = &timeline.video_tracks()[0];
+        assert!(video.enabled); // soloed -> active under global solo
+        assert!(video.solo);
+        assert!(!video.mute);
+
+        let audio = &timeline.audio_tracks()[0];
+        assert!(!audio.enabled); // global solo elsewhere -> silenced
+        assert!(!audio.solo);
+        assert!(!audio.mute);
     }
 }
