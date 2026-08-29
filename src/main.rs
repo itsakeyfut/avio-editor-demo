@@ -8,6 +8,7 @@ mod proxy;
 mod sprite;
 mod state;
 mod thumbnail;
+mod timeline_bridge;
 mod trim;
 mod ui;
 
