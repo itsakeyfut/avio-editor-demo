@@ -1276,7 +1276,7 @@ pub struct Freeze {
     pub hold_secs: f64,
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TimelineClip {
     pub source_index: usize,
     pub start_on_track: Duration,
@@ -1557,5 +1557,64 @@ impl ImportedClip {
         let mins = total_secs / 60;
         let secs = total_secs % 60;
         format!("{mins}:{secs:02}.{millis:03}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timeline_clip_serde_round_trips() {
+        let tc = TimelineClip {
+            source_index: 3,
+            start_on_track: Duration::from_secs(2),
+            in_point: Some(Duration::from_secs(1)),
+            out_point: Some(Duration::from_secs(5)),
+            transition: Some(avio::XfadeTransition::Dissolve),
+            transition_duration: Duration::from_millis(500),
+            gain_db: 0.0,
+            fade_in: Duration::ZERO,
+            fade_out: Duration::ZERO,
+            brightness: 0.0,
+            contrast: 1.0,
+            saturation: 1.0,
+            speed: 1.5,
+            reverse: false,
+            freeze: None,
+            opacity: 1.0,
+            blend_mode: avio::BlendMode::Multiply,
+            position_x: 0.0,
+            position_y: 0.0,
+            scale_pct: 100.0,
+            lut_path: None,
+            wb_temperature: 5000,
+            wb_tint: 0.0,
+            hue_degrees: 0.0,
+            gamma_r: 1.0,
+            gamma_g: 1.0,
+            gamma_b: 1.0,
+            vignette: 0.4,
+            vignette_x: 50.0,
+            vignette_y: 50.0,
+            curves: ToneCurves::default(),
+            wheels: ColorWheels::default(),
+            video_effects: VideoEffects::default(),
+            transform: Transform::default(),
+            overlay: Overlay::default(),
+            subtitle: Subtitle::default(),
+            keying: Keying::default(),
+            mask: Mask {
+                shape: MaskShape::Rectangle,
+                ..Mask::default()
+            },
+            animation: ClipAnimation::default(),
+        };
+        let json = serde_json::to_string(&tc).expect("serialize");
+        let back: TimelineClip = serde_json::from_str(&json).expect("deserialize");
+        // TimelineClip has no Debug impl, so assert_eq!'s failure-message
+        // formatting isn't available here; assert! still exercises the same
+        // PartialEq round-trip check.
+        assert!(tc == back);
     }
 }

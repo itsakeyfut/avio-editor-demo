@@ -1279,58 +1279,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                 let clips = &state.clips;
                 let use_proxies = state.export_use_proxies;
                 let make_clip = |tc: &state::TimelineClip| {
-                    let src = &clips[tc.source_index];
-                    export::ExportClip {
-                        path: src.path.clone(),
-                        start_on_track: tc.start_on_track,
-                        in_point: tc.in_point,
-                        out_point: tc.out_point,
-                        transition: tc.transition,
-                        transition_duration: tc.transition_duration,
-                        source_duration: src.info.duration(),
-                        fps: src.info.frame_rate().unwrap_or(30.0),
-                        has_audio: src.info.primary_audio().is_some(),
-                        gain_db: tc.gain_db,
-                        fade_in: tc.fade_in,
-                        fade_out: tc.fade_out,
-                        brightness: tc.brightness,
-                        contrast: tc.contrast,
-                        saturation: tc.saturation,
-                        speed: tc.speed,
-                        reverse: tc.reverse,
-                        freeze: tc.freeze,
-                        opacity: tc.opacity,
-                        blend_mode: tc.blend_mode,
-                        position_x: tc.position_x,
-                        position_y: tc.position_y,
-                        scale_pct: tc.scale_pct,
-                        proxy_path: if use_proxies {
-                            src.proxy_path.clone()
-                        } else {
-                            None
-                        },
-                        lut_path: tc.lut_path.clone(),
-                        wb_temperature: tc.wb_temperature,
-                        wb_tint: tc.wb_tint,
-                        hue_degrees: tc.hue_degrees,
-                        gamma_r: tc.gamma_r,
-                        gamma_g: tc.gamma_g,
-                        gamma_b: tc.gamma_b,
-                        vignette: tc.vignette,
-                        vignette_x: tc.vignette_x,
-                        vignette_y: tc.vignette_y,
-                        width: src.info.primary_video().map(|v| v.width()).unwrap_or(0),
-                        height: src.info.primary_video().map(|v| v.height()).unwrap_or(0),
-                        curves: tc.curves.clone(),
-                        wheels: tc.wheels,
-                        video_effects: tc.video_effects,
-                        transform: tc.transform,
-                        overlay: tc.overlay.clone(),
-                        subtitle: tc.subtitle.clone(),
-                        keying: tc.keying,
-                        mask: tc.mask.clone(),
-                        animation: tc.animation.clone(),
-                    }
+                    export::timeline_clip_to_export_clip(tc, clips, use_proxies)
                 };
                 let tracks = &state.timeline.tracks;
                 let audio_start = state.timeline.audio_track_start();
@@ -1338,7 +1287,7 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                     video_clips: (0..audio_start)
                         .map(|ti| {
                             if track_is_active(tracks, ti) {
-                                tracks[ti].clips.iter().map(make_clip).collect()
+                                tracks[ti].clips.iter().filter_map(make_clip).collect()
                             } else {
                                 vec![]
                             }
@@ -1346,7 +1295,11 @@ pub fn show(state: &mut state::AppState, ui: &mut egui::Ui) {
                         .collect(),
                     a1_clips: if audio_start < tracks.len() && track_is_active(tracks, audio_start)
                     {
-                        tracks[audio_start].clips.iter().map(make_clip).collect()
+                        tracks[audio_start]
+                            .clips
+                            .iter()
+                            .filter_map(make_clip)
+                            .collect()
                     } else {
                         vec![]
                     },
