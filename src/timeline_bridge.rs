@@ -56,13 +56,17 @@ pub(crate) fn load_demo_clip(clip: &avio::Clip) -> Option<state::TimelineClip> {
 /// source `TimelineClip` as metadata JSON on the resulting `avio::Clip` and
 /// using avio-native `Track` mute/solo flags (so muted tracks keep their
 /// clips in the model; avio's `is_active()` excludes them from render).
+///
+/// Returns `Err` when `TimelineBuilder::build()` fails (e.g. `timeline.tracks`
+/// is empty, or a first-clip probe fails) — propagated rather than papered
+/// over with a fallback, since `build()` is genuinely fallible.
 #[allow(dead_code)]
 pub(crate) fn to_avio(
     timeline: &state::TimelineState,
     pool: &[state::ImportedClip],
     canvas: Option<(u32, u32)>,
     use_proxy: bool,
-) -> avio::Timeline {
+) -> Result<avio::Timeline, avio::TimelineError> {
     let mut builder = avio::Timeline::builder();
     if let Some((w, h)) = canvas {
         builder = builder.canvas(w, h);
@@ -91,23 +95,7 @@ pub(crate) fn to_avio(
             state::TrackKind::Audio => builder.audio_track_with(track),
         };
     }
-    // `build()` errors only when both track lists are empty (`timeline.tracks`
-    // itself was empty) or when probing a first clip's source file fails.
-    // Neither applies to the fallback below: an empty video track makes
-    // `video_tracks` non-empty (skipping the `NoInput` check) and has no clip
-    // to probe, so canvas/frame-rate resolution falls through to its default
-    // (1920x1080@30) — that `build()` call cannot fail. The retry loop is a
-    // non-panicking safety net in case that invariant ever changes upstream;
-    // it is expected to run its body exactly once.
-    builder.build().unwrap_or_else(|e| {
-        log::warn!("to_avio: build failed ({e}); returning empty timeline");
-        loop {
-            match avio::Timeline::builder().video_track(Vec::new()).build() {
-                Ok(t) => break t,
-                Err(e2) => log::error!("to_avio: fallback build failed ({e2}); retrying"),
-            }
-        }
-    })
+    builder.build()
 }
 
 #[cfg(test)]
