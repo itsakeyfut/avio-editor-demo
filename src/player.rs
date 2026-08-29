@@ -418,6 +418,127 @@ pub fn spawn_player(
     (thread, handle_rx, proxy_rx)
 }
 
+// ── assemble_preview_timeline ───────────────────────────────────────────────────
+
+/// Composes the preview `avio::Timeline` from track snapshots on the calling
+/// thread. Same per-clip mapping and builder as the playback worker used inline;
+/// returns `Err` when there is no V1 clip or the builder fails.
+pub fn assemble_preview_timeline(
+    video_tracks: Vec<Vec<TrackClipData>>,
+    a1: Vec<TrackClipData>,
+    canvas: Option<(u32, u32)>,
+) -> Result<avio::Timeline, String> {
+    let make_clip = |tc: TrackClipData| -> avio::Clip {
+        let mut c = avio::Clip::new(&tc.path).offset(tc.start_on_track);
+        c.in_point = tc.in_point;
+        c.out_point = tc.out_point;
+        #[allow(clippy::float_cmp)]
+        if tc.speed != 1.0 {
+            c = c.with_speed(tc.speed as f64);
+        }
+        // A volume envelope (animation.volume) overrides the static gain.
+        if tc.gain_db != 0.0 && !tc.animation.volume.is_active() {
+            c = c.volume(tc.gain_db as f64);
+        }
+        if tc.fade_in > Duration::ZERO {
+            c = c.with_fade_in(tc.fade_in);
+        }
+        if tc.fade_out > Duration::ZERO {
+            c = c.with_fade_out(tc.fade_out);
+        }
+        if let Some(kind) = tc.transition {
+            c = c.with_transition(kind, tc.transition_duration);
+        }
+        // Freeze frame — applied in preview too so the clip length matches export.
+        // (Reverse is export-only; the preview plays forward.) #143.
+        c = crate::export::apply_freeze(c, tc.freeze);
+        // Chroma key first — key original colours before transform/grade,
+        // producing alpha the composer reveals through. Matches export.
+        c = crate::export::apply_keying(c, &tc.keying);
+        // Geometric transform (crop → flip → rotate) applied before the grade,
+        // matching export so the monitor reflects the rendered geometry.
+        c = crate::export::apply_transform(c, &tc.transform, tc.width, tc.height);
+        // Full colour grade (Eq → WB → Hue → Gamma → ThreeWayCC → Curves → LUT → Vignette), shared with export.
+        // The preview player applies these via avio's RealtimeComposer, so the
+        // monitor matches the rendered output without any host-side re-grading.
+        c = crate::export::apply_color_grade(
+            c,
+            tc.brightness,
+            tc.contrast,
+            tc.saturation,
+            tc.wb_temperature,
+            tc.wb_tint,
+            tc.hue_degrees,
+            tc.gamma_r,
+            tc.gamma_g,
+            tc.gamma_b,
+            &tc.wheels,
+            &tc.curves,
+            tc.lut_path.as_deref(),
+            tc.vignette,
+            tc.vignette_x,
+            tc.vignette_y,
+            tc.width,
+            tc.height,
+        );
+        // Stackable video effects, on top of the grade (matches export).
+        c = crate::export::apply_video_effects(c, &tc.video_effects);
+        // Re-frame into the project canvas (fit/fill) — final video step, matches
+        // export. No-op when no aspect preset is active.
+        if let Some((cw, ch)) = canvas {
+            c = crate::export::apply_aspect(c, tc.transform.fit_mode, tc.width, tc.height, cw, ch);
+        }
+        // Image overlay (watermark / logo) — matches export.
+        c = crate::export::apply_overlay(c, &tc.overlay);
+        // Burned-in subtitle — on top of the overlay, matches export.
+        c = crate::export::apply_subtitle(c, &tc.subtitle);
+        // Region-composite mask — shapes the final alpha, matches export.
+        c = crate::export::apply_mask(c, &tc.mask, tc.width, tc.height);
+        // Per-clip static transform + keyframe animation (opacity, position, scale)
+        // — matches export so the monitor reflects the rendered output.
+        c = crate::export::apply_animation(
+            c,
+            &tc.animation,
+            tc.start_on_track,
+            (tc.position_x, tc.position_y),
+            tc.scale_pct,
+            (tc.width, tc.height),
+        );
+        #[allow(clippy::float_cmp)]
+        if tc.opacity != 1.0 {
+            c = c.with_opacity(tc.opacity);
+        }
+        if tc.blend_mode != avio::BlendMode::Normal {
+            c = c.with_blend_mode(tc.blend_mode);
+        }
+        c
+    };
+
+    let avio_video_tracks: Vec<Vec<avio::Clip>> = video_tracks
+        .into_iter()
+        .map(|track| track.into_iter().map(make_clip).collect())
+        .collect();
+    let a1_clips: Vec<avio::Clip> = a1.into_iter().map(make_clip).collect();
+
+    let Some(v1_clips) = avio_video_tracks.first() else {
+        return Err("no V1 clips".to_string());
+    };
+    if v1_clips.is_empty() {
+        return Err("no V1 clips".to_string());
+    }
+
+    let mut builder = avio::Timeline::builder().video_track(avio_video_tracks[0].clone());
+    for vn in avio_video_tracks.into_iter().skip(1) {
+        if !vn.is_empty() {
+            builder = builder.video_track(vn);
+        }
+    }
+    if !a1_clips.is_empty() {
+        builder = builder.audio_track(a1_clips);
+    }
+    builder.build().map_err(|e| e.to_string())
+}
+
 // ── spawn_timeline_player ──────────────────────────────────────────────────────
 
 /// Spawns a background thread running `TimelineRunner::run()` for multi-track playback.
@@ -436,128 +557,10 @@ pub fn spawn_timeline_player(
     let (handle_tx, handle_rx) = mpsc::sync_channel::<PlayerHandle>(1);
 
     let thread = std::thread::spawn(move || {
-        let make_clip = |tc: TrackClipData| -> avio::Clip {
-            let mut c = avio::Clip::new(&tc.path).offset(tc.start_on_track);
-            c.in_point = tc.in_point;
-            c.out_point = tc.out_point;
-            #[allow(clippy::float_cmp)]
-            if tc.speed != 1.0 {
-                c = c.with_speed(tc.speed as f64);
-            }
-            // A volume envelope (animation.volume) overrides the static gain.
-            if tc.gain_db != 0.0 && !tc.animation.volume.is_active() {
-                c = c.volume(tc.gain_db as f64);
-            }
-            if tc.fade_in > Duration::ZERO {
-                c = c.with_fade_in(tc.fade_in);
-            }
-            if tc.fade_out > Duration::ZERO {
-                c = c.with_fade_out(tc.fade_out);
-            }
-            if let Some(kind) = tc.transition {
-                c = c.with_transition(kind, tc.transition_duration);
-            }
-            // Freeze frame — applied in preview too so the clip length matches export.
-            // (Reverse is export-only; the preview plays forward.) #143.
-            c = crate::export::apply_freeze(c, tc.freeze);
-            // Chroma key first — key original colours before transform/grade,
-            // producing alpha the composer reveals through. Matches export.
-            c = crate::export::apply_keying(c, &tc.keying);
-            // Geometric transform (crop → flip → rotate) applied before the grade,
-            // matching export so the monitor reflects the rendered geometry.
-            c = crate::export::apply_transform(c, &tc.transform, tc.width, tc.height);
-            // Full colour grade (Eq → WB → Hue → Gamma → ThreeWayCC → Curves → LUT → Vignette), shared with export.
-            // The preview player applies these via avio's RealtimeComposer, so the
-            // monitor matches the rendered output without any host-side re-grading.
-            c = crate::export::apply_color_grade(
-                c,
-                tc.brightness,
-                tc.contrast,
-                tc.saturation,
-                tc.wb_temperature,
-                tc.wb_tint,
-                tc.hue_degrees,
-                tc.gamma_r,
-                tc.gamma_g,
-                tc.gamma_b,
-                &tc.wheels,
-                &tc.curves,
-                tc.lut_path.as_deref(),
-                tc.vignette,
-                tc.vignette_x,
-                tc.vignette_y,
-                tc.width,
-                tc.height,
-            );
-            // Stackable video effects, on top of the grade (matches export).
-            c = crate::export::apply_video_effects(c, &tc.video_effects);
-            // Re-frame into the project canvas (fit/fill) — final video step, matches
-            // export. No-op when no aspect preset is active.
-            if let Some((cw, ch)) = canvas {
-                c = crate::export::apply_aspect(
-                    c,
-                    tc.transform.fit_mode,
-                    tc.width,
-                    tc.height,
-                    cw,
-                    ch,
-                );
-            }
-            // Image overlay (watermark / logo) — matches export.
-            c = crate::export::apply_overlay(c, &tc.overlay);
-            // Burned-in subtitle — on top of the overlay, matches export.
-            c = crate::export::apply_subtitle(c, &tc.subtitle);
-            // Region-composite mask — shapes the final alpha, matches export.
-            c = crate::export::apply_mask(c, &tc.mask, tc.width, tc.height);
-            // Per-clip static transform + keyframe animation (opacity, position, scale)
-            // — matches export so the monitor reflects the rendered output.
-            c = crate::export::apply_animation(
-                c,
-                &tc.animation,
-                tc.start_on_track,
-                (tc.position_x, tc.position_y),
-                tc.scale_pct,
-                (tc.width, tc.height),
-            );
-            #[allow(clippy::float_cmp)]
-            if tc.opacity != 1.0 {
-                c = c.with_opacity(tc.opacity);
-            }
-            if tc.blend_mode != avio::BlendMode::Normal {
-                c = c.with_blend_mode(tc.blend_mode);
-            }
-            c
-        };
-
-        let avio_video_tracks: Vec<Vec<avio::Clip>> = video_tracks
-            .into_iter()
-            .map(|track| track.into_iter().map(make_clip).collect())
-            .collect();
-        let a1_clips: Vec<avio::Clip> = a1.into_iter().map(make_clip).collect();
-
-        let Some(v1_clips) = avio_video_tracks.first() else {
-            log::warn!("spawn_timeline_player: no V1 clips");
-            return;
-        };
-        if v1_clips.is_empty() {
-            log::warn!("spawn_timeline_player: no V1 clips");
-            return;
-        }
-
-        let mut builder = avio::Timeline::builder().video_track(avio_video_tracks[0].clone());
-        for vn in avio_video_tracks.into_iter().skip(1) {
-            if !vn.is_empty() {
-                builder = builder.video_track(vn);
-            }
-        }
-        if !a1_clips.is_empty() {
-            builder = builder.audio_track(a1_clips);
-        }
-
-        let timeline = match builder.build() {
+        let timeline = match assemble_preview_timeline(video_tracks, a1, canvas) {
             Ok(t) => t,
             Err(e) => {
-                log::warn!("Timeline::builder().build() failed: {e}");
+                log::warn!("assemble_preview_timeline: {e}");
                 return;
             }
         };
