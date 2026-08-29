@@ -1091,12 +1091,12 @@ fn build_lavfi_overlay_filter(
     Some(chain)
 }
 
-fn build_and_render(
+/// Composes the export `avio::Timeline` from a snapshot on the calling thread.
+/// Applies the export-range filter, computes the total-frames estimate, and runs
+/// the same track/canvas/audio/lavfi builder as before. Pure: no I/O, no probe.
+pub(crate) fn assemble_export_timeline(
     mut snapshot: ExportSnapshot,
-    output: &std::path::Path,
-    progress: &Arc<AtomicU32>,
-    cancel: &Arc<AtomicBool>,
-) -> Result<(), String> {
+) -> Result<(avio::Timeline, Option<u64>), String> {
     // Apply export range filter. Mutates the snapshot so all downstream logic
     // (total_frames_estimate, timeline_dur_secs, lavfi overlay) uses trimmed clips.
     if let (Some(range_in), Some(range_out)) = (snapshot.export_in, snapshot.export_out)
@@ -1219,8 +1219,6 @@ fn build_and_render(
         return Err("V1 track has no clips to export".to_string());
     }
 
-    let config = snapshot.encoder_config.to_encoder_config();
-
     let mut builder = avio::Timeline::builder().video_track(avio_video[0].clone());
 
     if let Some((cw, ch)) = builder_canvas {
@@ -1254,6 +1252,17 @@ fn build_and_render(
 
     let timeline = builder.build().map_err(|e| e.to_string())?;
 
+    Ok((timeline, total_frames_estimate))
+}
+
+fn build_and_render(
+    snapshot: ExportSnapshot,
+    output: &std::path::Path,
+    progress: &Arc<AtomicU32>,
+    cancel: &Arc<AtomicBool>,
+) -> Result<(), String> {
+    let config = snapshot.encoder_config.to_encoder_config();
+    let (timeline, total_frames_estimate) = assemble_export_timeline(snapshot)?;
     let progress_ref = Arc::clone(progress);
     let cancel_ref = Arc::clone(cancel);
     let render_result = timeline.render_with_progress(output, config, move |p| {
